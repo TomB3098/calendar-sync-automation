@@ -1,8 +1,10 @@
 import tempfile
+import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
+import requests
 import sync_exchange_icloud_calendar as mod
 
 
@@ -107,6 +109,164 @@ class CalendarSyncLogicTests(unittest.TestCase):
         assert reason is not None
         self.assertTrue(reason.startswith("source-deleted:"))
 
+    def test_execute_provider_write_continues_after_http_error_and_throttles(self) -> None:
+        state = mod.SyncState(Path(tempfile.mkdtemp()) / "state.json")
+        log = mod.Logger()
+        cfg = mod.Config(
+            exchange_tenant_id="tenant",
+            exchange_client_id="client",
+            exchange_client_secret="secret",
+            exchange_user="user@example.com",
+            icloud_user="icloud@example.com",
+            icloud_app_pw="pw",
+            icloud_principal_path="/principal/",
+            icloud_target_calendar_display="Kalender",
+            google_enabled=False,
+            google_calendar_id="primary",
+            google_blocked_title="Blocked",
+            google_oauth_client_id="",
+            google_oauth_client_secret="",
+            google_oauth_refresh_token="",
+            google_service_account_json="",
+            google_impersonate_user="",
+            state_path=Path(tempfile.mkdtemp()) / "state2.json",
+            dry_run=False,
+            window_days=30,
+            timeout_sec=5,
+            write_delay_ms=60,
+            max_writes_per_run=10,
+            write_backoff_enabled=False,
+            write_backoff_base_ms=10,
+            write_backoff_max_ms=50,
+        )
+
+        desired = mod.SyncEvent(
+            provider=mod.SOURCE_EXCHANGE,
+            provider_id="ex-1",
+            title="Meeting",
+            start={"all_day": False, "dateTime": "2026-03-10T09:00:00Z"},
+            end={"all_day": False, "dateTime": "2026-03-10T10:00:00Z"},
+        )
+
+        response = requests.Response()
+        response.status_code = 507
+        response._content = b'{"error":{"code":"InsufficientStorage","message":"quota"}}'
+        err = requests.HTTPError("507", response=response)
+
+        write_index = 0
+        _, write_index = mod.execute_provider_write(
+            provider=mod.SOURCE_ICLOUD,
+            sync_id="sync-1",
+            cfg=cfg,
+            state=state,
+            log=log,
+            dry_run=False,
+            write_index=write_index,
+            op_label="upsert",
+            fn=lambda: (_ for _ in ()).throw(err),
+            desired=desired,
+            source=mod.SOURCE_EXCHANGE,
+            mode=mod.MODE_FULL,
+        )
+
+        self.assertEqual(write_index, 1)
+        self.assertEqual(log.stats.get("icloud_errors", 0), 1)
+        self.assertIsNotNone(state.get_retry_entry("sync-1", mod.SOURCE_ICLOUD))
+
+        t0 = time.monotonic()
+        result, write_index = mod.execute_provider_write(
+            provider=mod.SOURCE_EXCHANGE,
+            sync_id="sync-1",
+            cfg=cfg,
+            state=state,
+            log=log,
+            dry_run=False,
+            write_index=write_index,
+            op_label="upsert",
+            fn=lambda: "ex-ok",
+            desired=desired,
+            source=mod.SOURCE_EXCHANGE,
+            mode=mod.MODE_FULL,
+        )
+        elapsed = time.monotonic() - t0
+
+        self.assertEqual(result, "ex-ok")
+        self.assertEqual(write_index, 2)
+        self.assertGreaterEqual(elapsed, 0.05)
+
+    def test_execute_provider_write_dry_run_honors_cap(self) -> None:
+        state = mod.SyncState(Path(tempfile.mkdtemp()) / "state.json")
+        log = mod.Logger()
+        cfg = mod.Config(
+            exchange_tenant_id="tenant",
+            exchange_client_id="client",
+            exchange_client_secret="secret",
+            exchange_user="user@example.com",
+            icloud_user="icloud@example.com",
+            icloud_app_pw="pw",
+            icloud_principal_path="/principal/",
+            icloud_target_calendar_display="Kalender",
+            google_enabled=False,
+            google_calendar_id="primary",
+            google_blocked_title="Blocked",
+            google_oauth_client_id="",
+            google_oauth_client_secret="",
+            google_oauth_refresh_token="",
+            google_service_account_json="",
+            google_impersonate_user="",
+            state_path=Path(tempfile.mkdtemp()) / "state3.json",
+            dry_run=True,
+            window_days=30,
+            timeout_sec=5,
+            write_delay_ms=0,
+            max_writes_per_run=1,
+            write_backoff_enabled=False,
+            write_backoff_base_ms=10,
+            write_backoff_max_ms=50,
+        )
+
+        desired = mod.SyncEvent(
+            provider=mod.SOURCE_EXCHANGE,
+            provider_id="ex-1",
+            title="Meeting",
+            start={"all_day": False, "dateTime": "2026-03-10T09:00:00Z"},
+            end={"all_day": False, "dateTime": "2026-03-10T10:00:00Z"},
+        )
+
+        write_index = 0
+        first, write_index = mod.execute_provider_write(
+            provider=mod.SOURCE_EXCHANGE,
+            sync_id="sync-cap",
+            cfg=cfg,
+            state=state,
+            log=log,
+            dry_run=True,
+            write_index=write_index,
+            op_label="upsert",
+            fn=lambda: "ok-1",
+            desired=desired,
+            source=mod.SOURCE_EXCHANGE,
+            mode=mod.MODE_FULL,
+        )
+        second, write_index = mod.execute_provider_write(
+            provider=mod.SOURCE_ICLOUD,
+            sync_id="sync-cap",
+            cfg=cfg,
+            state=state,
+            log=log,
+            dry_run=True,
+            write_index=write_index,
+            op_label="upsert",
+            fn=lambda: "ok-2",
+            desired=desired,
+            source=mod.SOURCE_EXCHANGE,
+            mode=mod.MODE_FULL,
+        )
+
+        self.assertEqual(first, "ok-1")
+        self.assertIsNone(second)
+        self.assertEqual(log.stats.get("write_cap_skipped", 0), 1)
+
     def test_sync_three_way_propagates_delete(self) -> None:
         state_path = Path(tempfile.mkdtemp()) / "state.json"
         cfg = mod.Config(
@@ -130,6 +290,11 @@ class CalendarSyncLogicTests(unittest.TestCase):
             dry_run=False,
             window_days=30,
             timeout_sec=5,
+            write_delay_ms=0,
+            max_writes_per_run=500,
+            write_backoff_enabled=False,
+            write_backoff_base_ms=100,
+            write_backoff_max_ms=1000,
         )
 
         sync_id = "sync-1"

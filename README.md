@@ -86,7 +86,21 @@ SYNC_DRY_RUN=false
 SYNC_WINDOW_DAYS=365
 CAL_SYNC_TIMEOUT_SEC=30
 CAL_SYNC_STATE_PATH=/root/.openclaw/workspace/memory/calendar-sync-state.json
+
+# Sequential write throttling / resilience
+SYNC_WRITE_DELAY_MS=500
+MAX_WRITES_PER_RUN=500
+SYNC_ENABLE_BACKOFF=true
+SYNC_BACKOFF_BASE_MS=1000
+SYNC_BACKOFF_MAX_MS=15000
 ```
+
+Schreibmodus/Resilienz:
+- Writes laufen strikt sequenziell mit Delay zwischen Operationen (`SYNC_WRITE_DELAY_MS`).
+- Optionaler Exponential Backoff bei 429/503/507 (`SYNC_ENABLE_BACKOFF`).
+- iCloud `507 Insufficient Storage` wird in eine Retry-Queue im State geschrieben; nächste Läufe setzen diese Einträge fort.
+- Checkpointing speichert den State nach jedem erfolgreichen Write und bei Retry-Queue-Änderungen.
+- Safety-Cap pro Lauf via `MAX_WRITES_PER_RUN`.
 
 ## Ausführen
 

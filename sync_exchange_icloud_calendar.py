@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -420,6 +421,11 @@ class Config:
     dry_run: bool
     window_days: int
     timeout_sec: int
+    write_delay_ms: int
+    max_writes_per_run: int
+    write_backoff_enabled: bool
+    write_backoff_base_ms: int
+    write_backoff_max_ms: int
 
     @staticmethod
     def from_env(dry_run_override: Optional[bool], window_days_override: Optional[int]) -> "Config":
@@ -452,6 +458,11 @@ class Config:
             dry_run=dry_run,
             window_days=max(1, window_days),
             timeout_sec=max(5, int(os.getenv("CAL_SYNC_TIMEOUT_SEC", "30"))),
+            write_delay_ms=max(0, int(os.getenv("SYNC_WRITE_DELAY_MS", "500"))),
+            max_writes_per_run=max(1, int(os.getenv("MAX_WRITES_PER_RUN", "500"))),
+            write_backoff_enabled=env_bool("SYNC_ENABLE_BACKOFF", True),
+            write_backoff_base_ms=max(100, int(os.getenv("SYNC_BACKOFF_BASE_MS", "1000"))),
+            write_backoff_max_ms=max(500, int(os.getenv("SYNC_BACKOFF_MAX_MS", "15000"))),
         )
 
     def validate(self) -> None:
@@ -510,12 +521,35 @@ class Logger:
         compact = " ".join([f"{k}={v}" for k, v in data.items() if v not in (None, "")])
         print(f"[sync][error] {message}" + (f" {compact}" if compact else ""))
 
+    def provider_error(self, provider: str, sync_id: str, status: Any, code: str, detail: str = "") -> None:
+        self._inc(f"{provider}_errors")
+        self.error(
+            "provider_error",
+            provider=provider,
+            sync_id=sync_id,
+            status=status,
+            code=code,
+            detail=detail,
+        )
+
     def summary(self) -> None:
         created = sum(v for k, v in self.stats.items() if k.endswith("_created"))
         updated = sum(v for k, v in self.stats.items() if k.endswith("_updated"))
         deleted = sum(v for k, v in self.stats.items() if k.endswith("_deleted"))
         skipped = sum(v for k, v in self.stats.items() if k.endswith("_skipped"))
-        self.info("SUMMARY", created=created, updated=updated, deleted=deleted, skipped=skipped)
+        self.info(
+            "SUMMARY",
+            created=created,
+            updated=updated,
+            deleted=deleted,
+            skipped=skipped,
+            exchange_errors=self.stats.get("exchange_errors", 0),
+            icloud_errors=self.stats.get("icloud_errors", 0),
+            google_errors=self.stats.get("google_errors", 0),
+            writes_attempted=self.stats.get("writes_attempted", 0),
+            write_cap_skipped=self.stats.get("write_cap_skipped", 0),
+            retry_queue_size=self.stats.get("retry_queue_size", 0),
+        )
 
 
 class SyncState:
@@ -533,6 +567,7 @@ class SyncState:
             },
             "sync_to_provider": {},
             "records": {},
+            "retry_queue": {},
             "updatedAt": None,
         }
 
@@ -548,6 +583,7 @@ class SyncState:
         if "provider_to_sync" in raw and "sync_to_provider" in raw:
             raw.setdefault("version", SYNC_VERSION)
             raw.setdefault("records", {})
+            raw.setdefault("retry_queue", {})
             raw.setdefault("provider_to_sync", {})
             for provider in [SOURCE_EXCHANGE, SOURCE_ICLOUD, SOURCE_GOOGLE]:
                 raw["provider_to_sync"].setdefault(provider, {})
@@ -630,6 +666,36 @@ class SyncState:
             "mode": mode,
             "modified_at": iso_z(modified_at),
         }
+
+    def set_retry_entry(
+        self,
+        sync_id: str,
+        provider: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        key = f"{sync_id}|{provider}"
+        queue = self.data.setdefault("retry_queue", {})
+        queue[key] = payload
+
+    def get_retry_entry(self, sync_id: str, provider: str) -> Optional[Dict[str, Any]]:
+        key = f"{sync_id}|{provider}"
+        return self.data.get("retry_queue", {}).get(key)
+
+    def remove_retry_entry(self, sync_id: str, provider: str) -> None:
+        key = f"{sync_id}|{provider}"
+        self.data.setdefault("retry_queue", {}).pop(key, None)
+
+    def list_retry_entries(self) -> List[Dict[str, Any]]:
+        return list(self.data.get("retry_queue", {}).values())
+
+    def due_retry_entries(self, now_dt: datetime) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for item in self.list_retry_entries():
+            due_raw = item.get("next_retry_at")
+            due_dt = parse_any_datetime(due_raw) if due_raw else None
+            if due_dt is None or due_dt <= now_dt:
+                out.append(item)
+        return out
 
     def forget_provider(
         self,
@@ -1687,6 +1753,297 @@ def index_by_id(events: List[SyncEvent]) -> Dict[str, SyncEvent]:
     return {ev.provider_id: ev for ev in events}
 
 
+def parse_http_error(err: requests.HTTPError) -> Tuple[Any, str, str]:
+    status = err.response.status_code if err.response is not None else "n/a"
+    code = "http_error"
+    detail = str(err)
+
+    if err.response is not None:
+        try:
+            payload = err.response.json()
+            if isinstance(payload, dict):
+                e = payload.get("error")
+                if isinstance(e, dict):
+                    code = str(e.get("code") or code)
+                    msg = e.get("message")
+                    if msg:
+                        detail = str(msg)
+                elif isinstance(e, str):
+                    code = e
+        except Exception:
+            pass
+
+    return status, code, detail
+
+
+def is_backoff_status(status: Any) -> bool:
+    try:
+        s = int(status)
+    except Exception:
+        return False
+    return s in {429, 503, 507}
+
+
+def compute_backoff_ms(attempt: int, base_ms: int, max_ms: int) -> int:
+    exp = max(0, attempt - 1)
+    delay = base_ms * (2 ** exp)
+    return max(0, min(delay, max_ms))
+
+
+def serialize_retry_event(event: SyncEvent) -> Dict[str, Any]:
+    return {
+        "title": event.title,
+        "start": event.start,
+        "end": event.end,
+        "description": event.description,
+        "location": event.location,
+        "recurrence": event.recurrence,
+        "modified_at": iso_z(event.modified_at) if event.modified_at else "",
+    }
+
+
+def deserialize_retry_event(payload: Dict[str, Any], provider: str, sync_id: str) -> SyncEvent:
+    mod_at = parse_any_datetime(payload.get("modified_at"))
+    return SyncEvent(
+        provider=provider,
+        provider_id="",
+        title=payload.get("title", "(ohne Betreff)"),
+        start=payload.get("start", {}),
+        end=payload.get("end", {}),
+        description=payload.get("description", ""),
+        location=payload.get("location", ""),
+        recurrence=list(payload.get("recurrence", []) or []),
+        sync_id=sync_id,
+        modified_at=mod_at,
+    )
+
+
+def enqueue_retry(
+    state: SyncState,
+    sync_id: str,
+    provider: str,
+    desired: SyncEvent,
+    source: str,
+    mode: str,
+    status: Any,
+    code: str,
+    detail: str,
+    now_dt: datetime,
+    cfg: Config,
+) -> None:
+    prev = state.get_retry_entry(sync_id, provider) or {}
+    attempts = int(prev.get("attempts", 0)) + 1
+    backoff_ms = compute_backoff_ms(attempts, cfg.write_backoff_base_ms, cfg.write_backoff_max_ms)
+    next_retry_at = now_dt + timedelta(milliseconds=backoff_ms)
+    state.set_retry_entry(
+        sync_id,
+        provider,
+        {
+            "sync_id": sync_id,
+            "provider": provider,
+            "source": source,
+            "mode": mode,
+            "desired": serialize_retry_event(desired),
+            "attempts": attempts,
+            "last_error": {"status": status, "code": code, "detail": detail},
+            "next_retry_at": iso_z(next_retry_at),
+            "updated_at": iso_z(now_dt),
+        },
+    )
+
+
+def maybe_checkpoint(state: SyncState, dry_run: bool) -> None:
+    if not dry_run:
+        state.save()
+
+
+def execute_provider_write(
+    *,
+    provider: str,
+    sync_id: str,
+    cfg: Config,
+    state: SyncState,
+    log: Logger,
+    dry_run: bool,
+    write_index: int,
+    op_label: str,
+    fn,
+    desired: Optional[SyncEvent] = None,
+    source: str = "",
+    mode: str = MODE_FULL,
+) -> Tuple[Optional[str], int]:
+    if write_index >= cfg.max_writes_per_run:
+        log._inc("write_cap_skipped")
+        log.action(provider, "skipped", sync_id, f"write-cap:{cfg.max_writes_per_run}")
+        return None, write_index
+
+    if cfg.write_delay_ms > 0 and write_index > 0:
+        time.sleep(cfg.write_delay_ms / 1000.0)
+
+    log._inc("writes_attempted")
+    write_index += 1
+
+    try:
+        result = fn()
+        if provider == SOURCE_ICLOUD and not dry_run:
+            state.remove_retry_entry(sync_id, SOURCE_ICLOUD)
+            maybe_checkpoint(state, dry_run)
+        return result, write_index
+    except requests.HTTPError as err:
+        status, code, detail = parse_http_error(err)
+        log.provider_error(provider, sync_id, status=status, code=code, detail=detail)
+
+        if provider == SOURCE_ICLOUD and str(status) == "507" and desired is not None:
+            enqueue_retry(
+                state=state,
+                sync_id=sync_id,
+                provider=provider,
+                desired=desired,
+                source=source,
+                mode=mode,
+                status=status,
+                code=code,
+                detail=detail,
+                now_dt=now_utc(),
+                cfg=cfg,
+            )
+            maybe_checkpoint(state, dry_run)
+
+        if cfg.write_backoff_enabled and is_backoff_status(status):
+            retry_entry = state.get_retry_entry(sync_id, provider)
+            attempt = int((retry_entry or {}).get("attempts", 1))
+            backoff_ms = compute_backoff_ms(attempt, cfg.write_backoff_base_ms, cfg.write_backoff_max_ms)
+            if backoff_ms > 0:
+                time.sleep(backoff_ms / 1000.0)
+
+        return None, write_index
+
+
+def process_retry_queue(
+    *,
+    cfg: Config,
+    state: SyncState,
+    log: Logger,
+    dry_run: bool,
+    write_index: int,
+    exchange: ExchangeClient,
+    icloud: ICloudClient,
+    google: Optional[GoogleClient],
+    indices_id: Dict[str, Dict[str, SyncEvent]],
+) -> int:
+    due = state.due_retry_entries(now_utc())
+    if not due:
+        return write_index
+
+    for item in due:
+        provider = item.get("provider", "")
+        sync_id = item.get("sync_id", "")
+        if not provider or not sync_id:
+            continue
+
+        desired = deserialize_retry_event(item.get("desired", {}), provider=provider, sync_id=sync_id)
+        source = item.get("source", SOURCE_EXCHANGE)
+        mode = item.get("mode", MODE_FULL)
+
+        existing = None
+        known_id = state.get_provider_id(provider, sync_id)
+        if known_id:
+            existing = indices_id.get(provider, {}).get(known_id)
+
+        if provider == SOURCE_EXCHANGE:
+            result, write_index = execute_provider_write(
+                provider=provider,
+                sync_id=sync_id,
+                cfg=cfg,
+                state=state,
+                log=log,
+                dry_run=dry_run,
+                write_index=write_index,
+                op_label="retry-upsert",
+                fn=lambda: exchange.upsert_event(
+                    existing=existing,
+                    desired=desired,
+                    sync_id=sync_id,
+                    source=source,
+                    mode=mode,
+                    blocked_title=cfg.google_blocked_title,
+                    dry_run=dry_run,
+                    log=log,
+                ),
+                desired=desired,
+                source=source,
+                mode=mode,
+            )
+        elif provider == SOURCE_ICLOUD:
+            result, write_index = execute_provider_write(
+                provider=provider,
+                sync_id=sync_id,
+                cfg=cfg,
+                state=state,
+                log=log,
+                dry_run=dry_run,
+                write_index=write_index,
+                op_label="retry-upsert",
+                fn=lambda: icloud.upsert_event(
+                    existing=existing,
+                    desired=desired,
+                    sync_id=sync_id,
+                    source=source,
+                    mode=mode,
+                    blocked_title=cfg.google_blocked_title,
+                    dry_run=dry_run,
+                    log=log,
+                ),
+                desired=desired,
+                source=source,
+                mode=mode,
+            )
+        elif provider == SOURCE_GOOGLE and google:
+            result, write_index = execute_provider_write(
+                provider=provider,
+                sync_id=sync_id,
+                cfg=cfg,
+                state=state,
+                log=log,
+                dry_run=dry_run,
+                write_index=write_index,
+                op_label="retry-upsert",
+                fn=lambda: google.upsert_event(
+                    existing=existing,
+                    desired=desired,
+                    sync_id=sync_id,
+                    source=source,
+                    mode=mode,
+                    blocked_title=cfg.google_blocked_title,
+                    dry_run=dry_run,
+                    log=log,
+                ),
+                desired=desired,
+                source=source,
+                mode=mode,
+            )
+        else:
+            continue
+
+        if result:
+            state.set_mapping(provider, result, sync_id)
+            remember_event_snapshot(
+                state=state,
+                sync_id=sync_id,
+                provider=provider,
+                provider_id=result,
+                desired=desired,
+                source=source,
+                mode=mode,
+                blocked_title=cfg.google_blocked_title,
+                modified_at=now_utc(),
+            )
+            state.remove_retry_entry(sync_id, provider)
+            maybe_checkpoint(state, dry_run)
+
+    return write_index
+
+
 def delete_provider_event(
     provider: str,
     event: SyncEvent,
@@ -1741,6 +2098,8 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
         SOURCE_GOOGLE: go_events,
     }
 
+    write_index = 0
+
     # normalize sync ids
     for provider, events in by_provider.items():
         for ev in events:
@@ -1767,18 +2126,34 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
         deduped, extras = dedupe_provider_events(provider, by_provider[provider], state, cfg.google_blocked_title, log)
         deduped_provider[provider] = deduped
         for extra in extras:
-            delete_provider_event(
+            extra_sync_id = extra.sync_id or stable_sync_id(provider, extra.provider_id)
+            delete_result, write_index = execute_provider_write(
                 provider=provider,
-                event=extra,
-                sync_id=extra.sync_id or stable_sync_id(provider, extra.provider_id),
-                exchange=exchange,
-                icloud=icloud,
-                google=google,
-                dry_run=dry_run,
+                sync_id=extra_sync_id,
+                cfg=cfg,
+                state=state,
                 log=log,
-                detail="duplicate-cleanup",
+                dry_run=dry_run,
+                write_index=write_index,
+                op_label="duplicate-cleanup-delete",
+                fn=lambda p=provider, e=extra, s=extra_sync_id: (
+                    delete_provider_event(
+                        provider=p,
+                        event=e,
+                        sync_id=s,
+                        exchange=exchange,
+                        icloud=icloud,
+                        google=google,
+                        dry_run=dry_run,
+                        log=log,
+                        detail="duplicate-cleanup",
+                    ),
+                    e.provider_id,
+                )[1],
             )
-            state.forget_provider(provider, provider_id=extra.provider_id, sync_id=extra.sync_id)
+            if delete_result:
+                state.forget_provider(provider, provider_id=extra.provider_id, sync_id=extra.sync_id)
+                maybe_checkpoint(state, dry_run)
 
     by_provider = deduped_provider
 
@@ -1800,22 +2175,45 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
             blocked_title=cfg.google_blocked_title,
         )
         if delete_reason:
+            all_deleted = True
             for provider in enabled_providers:
                 event = current_by_provider.get(provider)
                 if event:
-                    delete_provider_event(
+                    delete_result, write_index = execute_provider_write(
                         provider=provider,
-                        event=event,
                         sync_id=sync_id,
-                        exchange=exchange,
-                        icloud=icloud,
-                        google=google,
-                        dry_run=dry_run,
+                        cfg=cfg,
+                        state=state,
                         log=log,
-                        detail=delete_reason,
+                        dry_run=dry_run,
+                        write_index=write_index,
+                        op_label="group-delete",
+                        fn=lambda p=provider, e=event, s=sync_id, d=delete_reason: (
+                            delete_provider_event(
+                                provider=p,
+                                event=e,
+                                sync_id=s,
+                                exchange=exchange,
+                                icloud=icloud,
+                                google=google,
+                                dry_run=dry_run,
+                                log=log,
+                                detail=d,
+                            ),
+                            e.provider_id,
+                        )[1],
                     )
-                state.forget_provider(provider, provider_id=event.provider_id if event else None, sync_id=sync_id)
-            state.forget_sync(sync_id)
+                    if delete_result:
+                        state.forget_provider(provider, provider_id=event.provider_id, sync_id=sync_id)
+                        maybe_checkpoint(state, dry_run)
+                    else:
+                        all_deleted = False
+                else:
+                    state.forget_provider(provider, provider_id=None, sync_id=sync_id)
+                    maybe_checkpoint(state, dry_run)
+            if all_deleted:
+                state.forget_sync(sync_id)
+                maybe_checkpoint(state, dry_run)
             continue
 
         group = [event for event in current_by_provider.values() if event]
@@ -1844,40 +2242,83 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
                 if known_id:
                     existing = indices_id[provider].get(known_id)
 
+            provider_id: Optional[str] = None
             if provider == SOURCE_EXCHANGE:
-                provider_id = exchange.upsert_event(
-                    existing=existing,
-                    desired=merged,
+                provider_id, write_index = execute_provider_write(
+                    provider=provider,
                     sync_id=sync_id,
+                    cfg=cfg,
+                    state=state,
+                    log=log,
+                    dry_run=dry_run,
+                    write_index=write_index,
+                    op_label="upsert",
+                    fn=lambda: exchange.upsert_event(
+                        existing=existing,
+                        desired=merged,
+                        sync_id=sync_id,
+                        source=authoritative_source,
+                        mode=mode,
+                        blocked_title=cfg.google_blocked_title,
+                        dry_run=dry_run,
+                        log=log,
+                    ),
+                    desired=merged,
                     source=authoritative_source,
                     mode=mode,
-                    blocked_title=cfg.google_blocked_title,
-                    dry_run=dry_run,
-                    log=log,
                 )
             elif provider == SOURCE_ICLOUD:
-                provider_id = icloud.upsert_event(
-                    existing=existing,
-                    desired=merged,
+                provider_id, write_index = execute_provider_write(
+                    provider=provider,
                     sync_id=sync_id,
+                    cfg=cfg,
+                    state=state,
+                    log=log,
+                    dry_run=dry_run,
+                    write_index=write_index,
+                    op_label="upsert",
+                    fn=lambda: icloud.upsert_event(
+                        existing=existing,
+                        desired=merged,
+                        sync_id=sync_id,
+                        source=authoritative_source,
+                        mode=mode,
+                        blocked_title=cfg.google_blocked_title,
+                        dry_run=dry_run,
+                        log=log,
+                    ),
+                    desired=merged,
                     source=authoritative_source,
                     mode=mode,
-                    blocked_title=cfg.google_blocked_title,
-                    dry_run=dry_run,
-                    log=log,
                 )
             elif provider == SOURCE_GOOGLE and google:
-                provider_id = google.upsert_event(
-                    existing=existing,
-                    desired=merged,
+                provider_id, write_index = execute_provider_write(
+                    provider=provider,
                     sync_id=sync_id,
+                    cfg=cfg,
+                    state=state,
+                    log=log,
+                    dry_run=dry_run,
+                    write_index=write_index,
+                    op_label="upsert",
+                    fn=lambda: google.upsert_event(
+                        existing=existing,
+                        desired=merged,
+                        sync_id=sync_id,
+                        source=authoritative_source,
+                        mode=mode,
+                        blocked_title=cfg.google_blocked_title,
+                        dry_run=dry_run,
+                        log=log,
+                    ),
+                    desired=merged,
                     source=authoritative_source,
                     mode=mode,
-                    blocked_title=cfg.google_blocked_title,
-                    dry_run=dry_run,
-                    log=log,
                 )
             else:
+                continue
+
+            if not provider_id:
                 continue
 
             state.set_mapping(provider, provider_id, sync_id)
@@ -1892,6 +2333,21 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
                 blocked_title=cfg.google_blocked_title,
                 modified_at=event_modified_or_fallback(existing) if existing and existing.provider_id == provider_id else now_utc(),
             )
+            maybe_checkpoint(state, dry_run)
+
+    write_index = process_retry_queue(
+        cfg=cfg,
+        state=state,
+        log=log,
+        dry_run=dry_run,
+        write_index=write_index,
+        exchange=exchange,
+        icloud=icloud,
+        google=google,
+        indices_id=indices_id,
+    )
+
+    log.stats["retry_queue_size"] = len(state.list_retry_entries())
 
     if dry_run:
         log.info("STATE_SKIPPED", reason="dry-run")
