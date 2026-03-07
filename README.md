@@ -1,6 +1,6 @@
 # Kalender-Sync: Exchange ↔ iCloud (+ Google)
 
-Script: `scripts/sync_exchange_icloud_calendar.py`
+Script: `sync_exchange_icloud_calendar.py`
 
 ## Verhalten
 
@@ -19,13 +19,21 @@ Konfliktauflösung (Last-Write-Wins):
   - iCloud: `LAST-MODIFIED` oder `DTSTAMP` (Fallback defensiv)
 - Gewinner wird in die anderen Provider gespiegelt.
 
-Loop/Dedupe-Schutz:
+Löschlogik:
+- Löschen auf **Exchange** oder **iCloud** wird bidirektional auf die verknüpften Kopien propagiert.
+- Löschen eines **nativen Google-Termins** wird auf Exchange/iCloud propagiert.
+- Löschen eines reinen **Google-Blocked-Mirror-Termins** löscht die Quelltermine nicht; der Mirror wird bei Bedarf neu aufgebaut.
+- Verschwundene Provider-Kopien werden nur dann als echtes Delete interpretiert, wenn die verbleibenden Kopien seit dem letzten erfolgreichen Sync inhaltlich unverändert sind.
+
+Duplikat-/Loop-Schutz:
 - stabile Sync-ID pro Event
 - Provider-Metadaten:
   - Exchange `singleValueExtendedProperties`
   - iCloud `X-AETHER-SYNC-*` in ICS
   - Google `extendedProperties.private`
 - zusätzlicher lokaler State (`CAL_SYNC_STATE_PATH`)
+- inhaltsbasiertes Relinking von verwaisten Kopien ohne Metadaten
+- automatische Bereinigung mehrfach vorhandener Events mit gleicher `sync_id` pro Provider
 
 ## ENV-Konfiguration
 
@@ -83,13 +91,13 @@ CAL_SYNC_STATE_PATH=/root/.openclaw/workspace/memory/calendar-sync-state.json
 ## Ausführen
 
 ```bash
-python3 scripts/sync_exchange_icloud_calendar.py
+python3 sync_exchange_icloud_calendar.py
 ```
 
 Dry-Run:
 
 ```bash
-python3 scripts/sync_exchange_icloud_calendar.py --dry-run
+python3 sync_exchange_icloud_calendar.py --dry-run
 ```
 
 ## Google Setup (Kurz)
@@ -109,7 +117,7 @@ python3 scripts/sync_exchange_icloud_calendar.py --dry-run
 ## Kurztest Konflikt-Simulation
 
 ```bash
-python3 scripts/test_calendar_conflict_resolution.py
+python3 -m unittest -v test_sync_exchange_icloud_calendar.py
 ```
 
 ## Logs
@@ -117,6 +125,7 @@ python3 scripts/test_calendar_conflict_resolution.py
 Das Script loggt kompakt je Provider:
 - `created`
 - `updated`
+- `deleted`
 - `skipped`
 
 und am Ende eine Summary.

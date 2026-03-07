@@ -27,10 +27,13 @@ import json
 import os
 import re
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -38,7 +41,7 @@ from requests.auth import HTTPBasicAuth
 
 # ===== Constants =====
 MARKER_PREFIX = "AETHER_SYNC"
-SYNC_VERSION = 3
+SYNC_VERSION = 4
 
 GRAPH_PROP_SYNC_ID = "String {66f5a359-4659-4830-9070-000000000001} Name AetherSyncId"
 GRAPH_PROP_SOURCE = "String {66f5a359-4659-4830-9070-000000000001} Name AetherSyncSource"
@@ -57,6 +60,11 @@ SOURCE_ICLOUD = "icloud"
 SOURCE_GOOGLE = "google"
 MODE_FULL = "full"
 MODE_BLOCKED = "blocked"
+
+SYNC_ORIGIN_METADATA = "metadata"
+SYNC_ORIGIN_STATE = "state"
+SYNC_ORIGIN_STABLE = "stable"
+SYNC_ORIGIN_MATCHED = "matched"
 
 
 # ===== Utility =====
@@ -83,6 +91,30 @@ def iso_z(dt: datetime) -> str:
     return dt.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def clean_tz_name(name: Optional[str]) -> str:
+    if not name:
+        return ""
+    value = str(name).strip().strip('"')
+    if "/" in value and value.startswith("/"):
+        return value.split("/", 1)[1]
+    return value
+
+
+def tzinfo_from_name(name: Optional[str]) -> Optional[ZoneInfo]:
+    cleaned = clean_tz_name(name)
+    if not cleaned:
+        return None
+    candidates = [cleaned]
+    if " " in cleaned:
+        candidates.append(cleaned.replace(" ", "_"))
+    for candidate in candidates:
+        try:
+            return ZoneInfo(candidate)
+        except Exception:
+            continue
+    return None
+
+
 def parse_any_datetime(raw: Optional[str]) -> Optional[datetime]:
     if not raw:
         return None
@@ -103,6 +135,46 @@ def parse_any_datetime(raw: Optional[str]) -> Optional[datetime]:
         return parsed.astimezone(UTC)
     except Exception:
         return None
+
+
+def parse_datetime_with_tz(raw: Optional[str], tz_name: Optional[str] = None) -> Optional[datetime]:
+    if not raw:
+        return None
+
+    value = str(raw).strip()
+    tzinfo = tzinfo_from_name(tz_name) or UTC
+
+    has_explicit_timezone = bool(re.search(r"(Z|[+-]\d{2}:\d{2})$", value))
+    if tz_name and not has_explicit_timezone:
+        compact_match = re.fullmatch(r"(\d{8})T(\d{6})", value)
+        if compact_match:
+            local = datetime.strptime(value, "%Y%m%dT%H%M%S")
+            return local.replace(tzinfo=tzinfo).astimezone(UTC)
+
+        try:
+            parsed_local = datetime.fromisoformat(value)
+        except Exception:
+            parsed_local = None
+        if parsed_local is not None and parsed_local.tzinfo is None:
+            return parsed_local.replace(tzinfo=tzinfo).astimezone(UTC)
+
+    parsed = parse_any_datetime(raw)
+    if parsed:
+        return parsed
+
+    compact_match = re.fullmatch(r"(\d{8})T(\d{6})", value)
+    if compact_match:
+        local = datetime.strptime(value, "%Y%m%dT%H%M%S")
+        return local.replace(tzinfo=tzinfo).astimezone(UTC)
+
+    try:
+        parsed_local = datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+    if parsed_local.tzinfo is None:
+        return parsed_local.replace(tzinfo=tzinfo).astimezone(UTC)
+    return parsed_local.astimezone(UTC)
 
 
 def normalized_start_to_dt(norm: Dict[str, Any]) -> datetime:
@@ -153,6 +225,22 @@ def parse_ics_prop(lines: Iterable[str], prop_name: str) -> Optional[Tuple[str, 
     return None
 
 
+def parse_prop_params(params: str) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    if not params:
+        return values
+
+    for chunk in params.split(";"):
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            values[chunk.strip().upper()] = ""
+            continue
+        key, value = chunk.split("=", 1)
+        values[key.strip().upper()] = value.strip().strip('"')
+    return values
+
+
 def ics_escape(text: str) -> str:
     return (
         (text or "")
@@ -172,6 +260,7 @@ def dt_ics_to_normalized(raw: str, params: str = "") -> Optional[Dict[str, Any]]
     if not raw:
         return None
     value = raw.strip()
+    params_map = parse_prop_params(params)
     params_u = params.upper()
 
     # all-day (VALUE=DATE or 8 chars)
@@ -182,11 +271,21 @@ def dt_ics_to_normalized(raw: str, params: str = "") -> Optional[Dict[str, Any]]
         return {"all_day": True, "date": date}
 
     # timed
-    m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?", value)
+    m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?", value)
     if not m:
+        parsed = parse_datetime_with_tz(value, params_map.get("TZID"))
+        if not parsed:
+            return None
+        return {"all_day": False, "dateTime": iso_z(parsed)}
+
+    y, mo, d, h, mi, s, z_suffix = m.groups()
+    if z_suffix:
+        return {"all_day": False, "dateTime": f"{y}-{mo}-{d}T{h}:{mi}:{s}Z"}
+
+    parsed = parse_datetime_with_tz(value, params_map.get("TZID"))
+    if not parsed:
         return None
-    y, mo, d, h, mi, s = m.groups()
-    return {"all_day": False, "dateTime": f"{y}-{mo}-{d}T{h}:{mi}:{s}Z"}
+    return {"all_day": False, "dateTime": iso_z(parsed)}
 
 
 def ics_prop_to_dt(params: str, value: str) -> Optional[datetime]:
@@ -218,11 +317,12 @@ def normalize_graph_dt(start: Dict[str, Any], is_all_day: bool) -> Optional[Dict
         return None
     if is_all_day:
         return {"all_day": True, "date": dt[:10]}
+    parsed = parse_datetime_with_tz(dt, (start or {}).get("timeZone"))
+    if parsed:
+        return {"all_day": False, "dateTime": iso_z(parsed)}
     if dt.endswith("Z"):
-        val = dt
-    else:
-        val = dt[:19] + "Z"
-    return {"all_day": False, "dateTime": val}
+        return {"all_day": False, "dateTime": dt}
+    return {"all_day": False, "dateTime": dt[:19] + "Z"}
 
 
 def normalize_google_dt(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -233,12 +333,16 @@ def normalize_google_dt(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     raw = obj.get("dateTime", "")
     if not raw:
         return None
+    parsed = parse_any_datetime(raw)
+    if parsed:
+        return {"all_day": False, "dateTime": iso_z(parsed)}
     if raw.endswith("Z"):
-        val = raw
-    else:
-        # best effort: no timezone conversion, assume UTC-like timestamp
-        val = raw[:19] + "Z"
-    return {"all_day": False, "dateTime": val}
+        return {"all_day": False, "dateTime": raw}
+    return {"all_day": False, "dateTime": raw[:19] + "Z"}
+
+
+def join_absolute_url(base: str, href: str) -> str:
+    return href if href.startswith("http://") or href.startswith("https://") else urljoin(base, href)
 
 
 def json_fp(data: Dict[str, Any]) -> str:
@@ -256,6 +360,7 @@ class SyncEvent:
     location: str = ""
     recurrence: List[str] = field(default_factory=list)
     sync_id: Optional[str] = None
+    sync_origin: str = ""
     source: Optional[str] = None
     mode: Optional[str] = None
     modified_at: Optional[datetime] = None
@@ -408,8 +513,9 @@ class Logger:
     def summary(self) -> None:
         created = sum(v for k, v in self.stats.items() if k.endswith("_created"))
         updated = sum(v for k, v in self.stats.items() if k.endswith("_updated"))
+        deleted = sum(v for k, v in self.stats.items() if k.endswith("_deleted"))
         skipped = sum(v for k, v in self.stats.items() if k.endswith("_skipped"))
-        self.info("SUMMARY", created=created, updated=updated, skipped=skipped)
+        self.info("SUMMARY", created=created, updated=updated, deleted=deleted, skipped=skipped)
 
 
 class SyncState:
@@ -426,6 +532,7 @@ class SyncState:
                 SOURCE_GOOGLE: {},
             },
             "sync_to_provider": {},
+            "records": {},
             "updatedAt": None,
         }
 
@@ -440,6 +547,10 @@ class SyncState:
         # migrate old shape ex_to_ic/ic_to_ex -> new map
         if "provider_to_sync" in raw and "sync_to_provider" in raw:
             raw.setdefault("version", SYNC_VERSION)
+            raw.setdefault("records", {})
+            raw.setdefault("provider_to_sync", {})
+            for provider in [SOURCE_EXCHANGE, SOURCE_ICLOUD, SOURCE_GOOGLE]:
+                raw["provider_to_sync"].setdefault(provider, {})
             return raw
 
         migrated = self._default()
@@ -468,11 +579,94 @@ class SyncState:
         return self.data["provider_to_sync"].get(provider, {}).get(provider_id)
 
     def set_mapping(self, provider: str, provider_id: str, sync_id: str) -> None:
-        self.data["provider_to_sync"].setdefault(provider, {})[provider_id] = sync_id
-        self.data["sync_to_provider"].setdefault(sync_id, {})[provider] = provider_id
+        provider_map = self.data["provider_to_sync"].setdefault(provider, {})
+        sync_map = self.data["sync_to_provider"].setdefault(sync_id, {})
+
+        previous_sync_id = provider_map.get(provider_id)
+        if previous_sync_id and previous_sync_id != sync_id:
+            previous_sync_map = self.data["sync_to_provider"].get(previous_sync_id, {})
+            if previous_sync_map.get(provider) == provider_id:
+                del previous_sync_map[provider]
+            if not previous_sync_map:
+                self.data["sync_to_provider"].pop(previous_sync_id, None)
+
+        previous_provider_id = sync_map.get(provider)
+        if previous_provider_id and previous_provider_id != provider_id:
+            existing_sync = provider_map.get(previous_provider_id)
+            if existing_sync == sync_id:
+                del provider_map[previous_provider_id]
+
+        provider_map[provider_id] = sync_id
+        sync_map[provider] = provider_id
 
     def get_provider_id(self, provider: str, sync_id: str) -> Optional[str]:
         return self.data["sync_to_provider"].get(sync_id, {}).get(provider)
+
+    def get_provider_record(self, sync_id: str, provider: str) -> Dict[str, Any]:
+        return (
+            self.data.get("records", {})
+            .get(sync_id, {})
+            .get("providers", {})
+            .get(provider, {})
+        )
+
+    def set_provider_record(
+        self,
+        sync_id: str,
+        provider: str,
+        provider_id: str,
+        fingerprint: str,
+        source: str,
+        mode: str,
+        modified_at: datetime,
+    ) -> None:
+        self.set_mapping(provider, provider_id, sync_id)
+        records = self.data.setdefault("records", {})
+        sync_record = records.setdefault(sync_id, {"providers": {}})
+        sync_record.setdefault("providers", {})[provider] = {
+            "provider_id": provider_id,
+            "fingerprint": fingerprint,
+            "source": source,
+            "mode": mode,
+            "modified_at": iso_z(modified_at),
+        }
+
+    def forget_provider(
+        self,
+        provider: str,
+        provider_id: Optional[str] = None,
+        sync_id: Optional[str] = None,
+    ) -> None:
+        provider_map = self.data["provider_to_sync"].setdefault(provider, {})
+        if sync_id is None and provider_id is not None:
+            sync_id = provider_map.get(provider_id)
+        if provider_id is None and sync_id is not None:
+            provider_id = self.data["sync_to_provider"].get(sync_id, {}).get(provider)
+
+        if provider_id:
+            provider_map.pop(provider_id, None)
+
+        if sync_id:
+            sync_map = self.data["sync_to_provider"].get(sync_id, {})
+            if provider_id is None or sync_map.get(provider) == provider_id:
+                sync_map.pop(provider, None)
+            if not sync_map:
+                self.data["sync_to_provider"].pop(sync_id, None)
+
+            record = self.data.setdefault("records", {}).get(sync_id, {})
+            providers = record.get("providers", {})
+            record_provider_id = providers.get(provider, {}).get("provider_id")
+            if provider_id is None or record_provider_id == provider_id:
+                providers.pop(provider, None)
+            if record and not providers:
+                self.data["records"].pop(sync_id, None)
+
+    def forget_sync(self, sync_id: str) -> None:
+        providers = dict(self.data["sync_to_provider"].get(sync_id, {}))
+        for provider, provider_id in providers.items():
+            self.data["provider_to_sync"].setdefault(provider, {}).pop(provider_id, None)
+        self.data["sync_to_provider"].pop(sync_id, None)
+        self.data.setdefault("records", {}).pop(sync_id, None)
 
 
 class ExchangeClient:
@@ -497,11 +691,14 @@ class ExchangeClient:
         self._token = r.json()["access_token"]
         return self._token
 
-    def _headers(self) -> Dict[str, str]:
-        return {
+    def _headers(self, prefer_utc: bool = False) -> Dict[str, str]:
+        headers = {
             "Authorization": f"Bearer {self._token_value()}",
             "Content-Type": "application/json",
         }
+        if prefer_utc:
+            headers["Prefer"] = 'outlook.timezone="UTC"'
+        return headers
 
     @staticmethod
     def _extract_meta(item: Dict[str, Any]) -> Dict[str, str]:
@@ -530,41 +727,53 @@ class ExchangeClient:
                 f"id eq '{GRAPH_PROP_MODE}')"
             ),
         }
-        r = requests.get(url, headers=self._headers(), params=params, timeout=self.cfg.timeout_sec)
-        r.raise_for_status()
-        items = r.json().get("value", [])
-
         out: List[SyncEvent] = []
-        for it in items:
-            start_n = normalize_graph_dt(it.get("start", {}), bool(it.get("isAllDay")))
-            end_n = normalize_graph_dt(it.get("end", {}), bool(it.get("isAllDay")))
-            if not start_n or not end_n:
-                continue
-
-            meta = self._extract_meta(it)
-            rec = []
-            if it.get("recurrence"):
-                # Graph recurrence object cannot be converted 1:1 into RRULE without complex mapping.
-                # Existing sync behavior: no recurrence serialization.
-                log.warn("exchange_recurrence_not_serialized", id=it.get("id", ""))
-
-            out.append(
-                SyncEvent(
-                    provider=SOURCE_EXCHANGE,
-                    provider_id=str(it.get("id", "")),
-                    title=str(it.get("subject", "") or "(ohne Betreff)"),
-                    start=start_n,
-                    end=end_n,
-                    description=((it.get("body") or {}).get("content") or ""),
-                    location=((it.get("location") or {}).get("displayName") or ""),
-                    recurrence=rec,
-                    sync_id=meta.get("sync_id") or None,
-                    source=meta.get("source") or None,
-                    mode=meta.get("mode") or None,
-                    modified_at=parse_any_datetime(it.get("lastModifiedDateTime")),
-                    raw=it,
-                )
+        next_url: Optional[str] = url
+        next_params: Optional[Dict[str, Any]] = params
+        while next_url:
+            r = requests.get(
+                next_url,
+                headers=self._headers(prefer_utc=True),
+                params=next_params,
+                timeout=self.cfg.timeout_sec,
             )
+            r.raise_for_status()
+            payload = r.json()
+            items = payload.get("value", [])
+
+            for it in items:
+                start_n = normalize_graph_dt(it.get("start", {}), bool(it.get("isAllDay")))
+                end_n = normalize_graph_dt(it.get("end", {}), bool(it.get("isAllDay")))
+                if not start_n or not end_n:
+                    continue
+
+                meta = self._extract_meta(it)
+                rec = []
+                if it.get("recurrence"):
+                    # Graph recurrence object cannot be converted 1:1 into RRULE without complex mapping.
+                    # Existing sync behavior: no recurrence serialization.
+                    log.warn("exchange_recurrence_not_serialized", id=it.get("id", ""))
+
+                out.append(
+                    SyncEvent(
+                        provider=SOURCE_EXCHANGE,
+                        provider_id=str(it.get("id", "")),
+                        title=str(it.get("subject", "") or "(ohne Betreff)"),
+                        start=start_n,
+                        end=end_n,
+                        description=((it.get("body") or {}).get("content") or ""),
+                        location=((it.get("location") or {}).get("displayName") or ""),
+                        recurrence=rec,
+                        sync_id=meta.get("sync_id") or None,
+                        sync_origin=SYNC_ORIGIN_METADATA if meta.get("sync_id") else "",
+                        source=meta.get("source") or None,
+                        mode=meta.get("mode") or None,
+                        modified_at=parse_any_datetime(it.get("lastModifiedDateTime")),
+                        raw=it,
+                    )
+                )
+            next_url = payload.get("@odata.nextLink")
+            next_params = None
         return out
 
     def _payload_for_event(self, event: SyncEvent, sync_id: str, source: str, mode: str, blocked_title: str) -> Dict[str, Any]:
@@ -647,6 +856,21 @@ class ExchangeClient:
         log.action("exchange", "updated", sync_id)
         return existing.provider_id
 
+    def delete_event(self, event: SyncEvent, sync_id: str, dry_run: bool, log: Logger, detail: str = "") -> None:
+        if dry_run:
+            suffix = "dry-run" if not detail else f"{detail},dry-run"
+            log.action("exchange", "deleted", sync_id, suffix)
+            return
+
+        r = requests.delete(
+            f"https://graph.microsoft.com/v1.0/users/{self.cfg.exchange_user}/events/{event.provider_id}",
+            headers=self._headers(),
+            timeout=self.cfg.timeout_sec,
+        )
+        if r.status_code not in {204, 404}:
+            r.raise_for_status()
+        log.action("exchange", "deleted", sync_id, detail or ("already-missing" if r.status_code == 404 else ""))
+
 
 class ICloudClient:
     def __init__(self, cfg: Config):
@@ -677,12 +901,13 @@ class ICloudClient:
         if not m:
             raise RuntimeError("iCloud calendar-home-set not found")
         home = m.group(1)
+        home_url = join_absolute_url("https://caldav.icloud.com", home)
 
         body2 = '''<?xml version="1.0" encoding="UTF-8"?>
 <D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><D:displayname/></D:prop></D:propfind>'''
         r2 = requests.request(
             "PROPFIND",
-            home,
+            home_url,
             headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
             data=body2,
             auth=auth,
@@ -704,7 +929,7 @@ class ICloudClient:
         if not cal_href:
             raise RuntimeError(f"iCloud calendar '{self.cfg.icloud_target_calendar_display}' not found")
 
-        host_match = re.match(r"https://([^/]+)/", home)
+        host_match = re.match(r"https://([^/]+)/", home_url)
         host = host_match.group(1) if host_match else "caldav.icloud.com"
         base = f"https://{host}"
         self._base, self._cal_href = base, cal_href
@@ -729,7 +954,7 @@ class ICloudClient:
 </C:calendar-query>'''
         r = requests.request(
             "REPORT",
-            base + cal_href,
+            join_absolute_url(base, cal_href),
             headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
             data=body,
             auth=auth,
@@ -781,6 +1006,7 @@ class ICloudClient:
                     location=ics_unescape(parse_ics_value(lines, "LOCATION") or ""),
                     recurrence=rec,
                     sync_id=parse_ics_value(lines, ICLOUD_META_SYNC_ID) or None,
+                    sync_origin=SYNC_ORIGIN_METADATA if parse_ics_value(lines, ICLOUD_META_SYNC_ID) else "",
                     source=parse_ics_value(lines, ICLOUD_META_SOURCE) or None,
                     mode=parse_ics_value(lines, ICLOUD_META_MODE) or None,
                     modified_at=modified,
@@ -806,6 +1032,7 @@ class ICloudClient:
             "BEGIN:VEVENT",
             f"UID:{uid}",
             f"DTSTAMP:{now_utc().strftime('%Y%m%dT%H%M%SZ')}",
+            f"LAST-MODIFIED:{now_utc().strftime('%Y%m%dT%H%M%SZ')}",
             f"SUMMARY:{ics_escape(title)}",
             f"DTSTART{start_params}:{start_value}",
             f"DTEND{end_params}:{end_value}",
@@ -860,7 +1087,7 @@ class ICloudClient:
             return href
 
         r = requests.put(
-            base + href,
+            join_absolute_url(base, href),
             data=ics.encode("utf-8"),
             headers={"Content-Type": "text/calendar; charset=utf-8"},
             auth=auth,
@@ -870,6 +1097,23 @@ class ICloudClient:
         action = "updated" if existing else "created"
         log.action("icloud", action, sync_id)
         return href
+
+    def delete_event(self, event: SyncEvent, sync_id: str, dry_run: bool, log: Logger, detail: str = "") -> None:
+        base, _cal_href = self.discover()
+        if dry_run:
+            suffix = "dry-run" if not detail else f"{detail},dry-run"
+            log.action("icloud", "deleted", sync_id, suffix)
+            return
+
+        r = requests.request(
+            "DELETE",
+            join_absolute_url(base, event.href or event.provider_id),
+            auth=self._auth(),
+            timeout=self.cfg.timeout_sec,
+        )
+        if r.status_code not in {204, 404}:
+            r.raise_for_status()
+        log.action("icloud", "deleted", sync_id, detail or ("already-missing" if r.status_code == 404 else ""))
 
 
 class GoogleClient:
@@ -962,42 +1206,54 @@ class GoogleClient:
 
     def list_events(self, start: datetime, end: datetime) -> List[SyncEvent]:
         url = f"https://www.googleapis.com/calendar/v3/calendars/{self.cfg.google_calendar_id}/events"
-        params = {
+        params: Dict[str, Any] = {
             "timeMin": iso_z(start),
             "timeMax": iso_z(end),
             "singleEvents": "true",
             "showDeleted": "false",
             "maxResults": 2500,
         }
-        r = requests.get(url, headers=self._headers(), params=params, timeout=self.cfg.timeout_sec)
-        r.raise_for_status()
-        items = r.json().get("items", [])
-
         out: List[SyncEvent] = []
-        for it in items:
-            start_n = normalize_google_dt(it.get("start", {}))
-            end_n = normalize_google_dt(it.get("end", {}))
-            if not start_n or not end_n:
-                continue
+        page_token: Optional[str] = None
+        while True:
+            if page_token:
+                params["pageToken"] = page_token
+            else:
+                params.pop("pageToken", None)
 
-            meta = self._extract_meta(it)
-            out.append(
-                SyncEvent(
-                    provider=SOURCE_GOOGLE,
-                    provider_id=str(it.get("id", "")),
-                    title=str(it.get("summary", "") or "(ohne Betreff)"),
-                    start=start_n,
-                    end=end_n,
-                    description=str(it.get("description", "") or ""),
-                    location=str(it.get("location", "") or ""),
-                    recurrence=list(it.get("recurrence", []) or []),
-                    sync_id=meta.get("sync_id") or None,
-                    source=meta.get("source") or None,
-                    mode=meta.get("mode") or None,
-                    modified_at=parse_any_datetime(it.get("updated")),
-                    raw=it,
+            r = requests.get(url, headers=self._headers(), params=params, timeout=self.cfg.timeout_sec)
+            r.raise_for_status()
+            payload = r.json()
+            items = payload.get("items", [])
+
+            for it in items:
+                start_n = normalize_google_dt(it.get("start", {}))
+                end_n = normalize_google_dt(it.get("end", {}))
+                if not start_n or not end_n:
+                    continue
+
+                meta = self._extract_meta(it)
+                out.append(
+                    SyncEvent(
+                        provider=SOURCE_GOOGLE,
+                        provider_id=str(it.get("id", "")),
+                        title=str(it.get("summary", "") or "(ohne Betreff)"),
+                        start=start_n,
+                        end=end_n,
+                        description=str(it.get("description", "") or ""),
+                        location=str(it.get("location", "") or ""),
+                        recurrence=list(it.get("recurrence", []) or []),
+                        sync_id=meta.get("sync_id") or None,
+                        sync_origin=SYNC_ORIGIN_METADATA if meta.get("sync_id") else "",
+                        source=meta.get("source") or None,
+                        mode=meta.get("mode") or None,
+                        modified_at=parse_any_datetime(it.get("updated")),
+                        raw=it,
+                    )
                 )
-            )
+            page_token = payload.get("nextPageToken")
+            if not page_token:
+                break
         return out
 
     def _payload_for_event(self, event: SyncEvent, sync_id: str, source: str, mode: str, blocked_title: str) -> Dict[str, Any]:
@@ -1078,6 +1334,19 @@ class GoogleClient:
         log.action("google", "created", sync_id)
         return str(out.get("id"))
 
+    def delete_event(self, event: SyncEvent, sync_id: str, dry_run: bool, log: Logger, detail: str = "") -> None:
+        if dry_run:
+            suffix = "dry-run" if not detail else f"{detail},dry-run"
+            log.action("google", "deleted", sync_id, suffix)
+            return
+
+        url = f"https://www.googleapis.com/calendar/v3/calendars/{self.cfg.google_calendar_id}/events/{event.provider_id}"
+        r = requests.delete(url, headers=self._headers(), timeout=self.cfg.timeout_sec)
+        if r.status_code not in {204, 404, 410}:
+            r.raise_for_status()
+        detail_text = detail or ("already-missing" if r.status_code in {404, 410} else "")
+        log.action("google", "deleted", sync_id, detail_text)
+
 
 def event_modified_or_fallback(event: SyncEvent) -> datetime:
     return event.modified_at or normalized_start_to_dt(event.start)
@@ -1085,6 +1354,235 @@ def event_modified_or_fallback(event: SyncEvent) -> datetime:
 
 def event_time_signature(event: SyncEvent) -> str:
     return json.dumps({"start": event.start, "end": event.end}, sort_keys=True, ensure_ascii=False)
+
+
+def effective_event_mode(event: SyncEvent, blocked_title: str) -> str:
+    if event.mode in {MODE_FULL, MODE_BLOCKED}:
+        return str(event.mode)
+    if google_source_skip_reason(event, blocked_title) == "google-blocked-mirror":
+        return MODE_BLOCKED
+    return MODE_FULL
+
+
+def event_snapshot_fingerprint(event: SyncEvent, blocked_title: str) -> str:
+    return event.fingerprint(effective_event_mode(event, blocked_title), blocked_title)
+
+
+def snapshot_matches_event(snapshot: Dict[str, Any], event: SyncEvent, blocked_title: str) -> bool:
+    if not snapshot:
+        return False
+    return snapshot.get("fingerprint") == event_snapshot_fingerprint(event, blocked_title)
+
+
+def provider_can_trigger_delete(provider: str, snapshot: Dict[str, Any]) -> bool:
+    if not snapshot:
+        return False
+    if provider == SOURCE_GOOGLE:
+        return snapshot.get("mode") != MODE_BLOCKED
+    return True
+
+
+def sync_origin_rank(origin: str) -> int:
+    return {
+        SYNC_ORIGIN_METADATA: 4,
+        SYNC_ORIGIN_STATE: 3,
+        SYNC_ORIGIN_MATCHED: 2,
+        SYNC_ORIGIN_STABLE: 1,
+    }.get(origin or "", 1)
+
+
+def select_primary_event(events: List[SyncEvent], preferred_provider_id: Optional[str], blocked_title: str) -> SyncEvent:
+    return max(
+        events,
+        key=lambda ev: (
+            1 if preferred_provider_id and ev.provider_id == preferred_provider_id else 0,
+            1 if effective_event_mode(ev, blocked_title) != MODE_BLOCKED else 0,
+            sync_origin_rank(ev.sync_origin),
+            event_modified_or_fallback(ev),
+            ev.provider_id,
+        ),
+    )
+
+
+def dedupe_provider_events(
+    provider: str,
+    events: List[SyncEvent],
+    state: SyncState,
+    blocked_title: str,
+    log: Logger,
+) -> Tuple[List[SyncEvent], List[SyncEvent]]:
+    by_sync: Dict[str, List[SyncEvent]] = defaultdict(list)
+    for event in events:
+        if event.sync_id:
+            by_sync[event.sync_id].append(event)
+
+    deduped: List[SyncEvent] = []
+    extras: List[SyncEvent] = []
+    for sync_id, group in by_sync.items():
+        if len(group) == 1:
+            deduped.append(group[0])
+            continue
+
+        preferred_provider_id = state.get_provider_id(provider, sync_id)
+        primary = select_primary_event(group, preferred_provider_id, blocked_title)
+        deduped.append(primary)
+        state.set_mapping(provider, primary.provider_id, sync_id)
+        for event in group:
+            if event is primary:
+                continue
+            extras.append(event)
+        log.warn("duplicate_provider_events_detected", provider=provider, sync_id=sync_id, count=len(group))
+
+    deduped.sort(key=lambda ev: (normalized_start_to_dt(ev.start), ev.provider_id))
+    return deduped, extras
+
+
+def relink_orphan_event(
+    known: SyncEvent,
+    orphan: SyncEvent,
+    state: SyncState,
+    match_kind: str,
+    log: Logger,
+) -> None:
+    orphan.sync_id = known.sync_id
+    orphan.sync_origin = SYNC_ORIGIN_MATCHED
+    state.set_mapping(orphan.provider, orphan.provider_id, str(known.sync_id))
+    log.info(
+        "relinked_orphan",
+        provider=orphan.provider,
+        provider_id=orphan.provider_id,
+        sync_id=known.sync_id,
+        match=match_kind,
+    )
+
+
+def reconcile_orphaned_events(
+    by_provider: Dict[str, List[SyncEvent]],
+    enabled_providers: List[str],
+    state: SyncState,
+    blocked_title: str,
+    log: Logger,
+) -> None:
+    changed = True
+    while changed:
+        changed = False
+        for source_provider in enabled_providers:
+            for target_provider in enabled_providers:
+                if source_provider == target_provider:
+                    continue
+
+                known_by_fp: Dict[str, List[SyncEvent]] = defaultdict(list)
+                orphan_by_fp: Dict[str, List[SyncEvent]] = defaultdict(list)
+
+                for event in by_provider[source_provider]:
+                    if event.sync_origin == SYNC_ORIGIN_STABLE:
+                        continue
+                    if effective_event_mode(event, blocked_title) == MODE_BLOCKED:
+                        continue
+                    known_by_fp[event.fingerprint(MODE_FULL, blocked_title)].append(event)
+
+                for event in by_provider[target_provider]:
+                    if event.sync_origin != SYNC_ORIGIN_STABLE:
+                        continue
+                    if effective_event_mode(event, blocked_title) == MODE_BLOCKED:
+                        continue
+                    orphan_by_fp[event.fingerprint(MODE_FULL, blocked_title)].append(event)
+
+                for fp in sorted(set(known_by_fp) & set(orphan_by_fp)):
+                    if len(known_by_fp[fp]) != 1 or len(orphan_by_fp[fp]) != 1:
+                        continue
+                    known = known_by_fp[fp][0]
+                    orphan = orphan_by_fp[fp][0]
+                    if not known.sync_id or known.sync_id == orphan.sync_id:
+                        continue
+                    relink_orphan_event(known, orphan, state, "full", log)
+                    changed = True
+
+        if SOURCE_GOOGLE not in enabled_providers:
+            continue
+
+        source_by_fp: Dict[str, List[SyncEvent]] = defaultdict(list)
+        google_blocked_by_fp: Dict[str, List[SyncEvent]] = defaultdict(list)
+
+        for provider in [SOURCE_EXCHANGE, SOURCE_ICLOUD]:
+            if provider not in enabled_providers:
+                continue
+            for event in by_provider[provider]:
+                if event.sync_origin == SYNC_ORIGIN_STABLE:
+                    continue
+                source_by_fp[event.fingerprint(MODE_BLOCKED, blocked_title)].append(event)
+
+        for event in by_provider[SOURCE_GOOGLE]:
+            if event.sync_origin != SYNC_ORIGIN_STABLE:
+                continue
+            if effective_event_mode(event, blocked_title) != MODE_BLOCKED:
+                continue
+            google_blocked_by_fp[event.fingerprint(MODE_BLOCKED, blocked_title)].append(event)
+
+        for fp in sorted(set(source_by_fp) & set(google_blocked_by_fp)):
+            if len(source_by_fp[fp]) != 1 or len(google_blocked_by_fp[fp]) != 1:
+                continue
+            known = source_by_fp[fp][0]
+            orphan = google_blocked_by_fp[fp][0]
+            if not known.sync_id or known.sync_id == orphan.sync_id:
+                continue
+            relink_orphan_event(known, orphan, state, "blocked", log)
+            changed = True
+
+
+def infer_group_delete_reason(
+    sync_id: str,
+    current_by_provider: Dict[str, Optional[SyncEvent]],
+    state: SyncState,
+    blocked_title: str,
+) -> Optional[str]:
+    missing_sources: List[str] = []
+    known_providers = state.data.get("sync_to_provider", {}).get(sync_id, {})
+    for provider in known_providers:
+        if current_by_provider.get(provider):
+            continue
+        snapshot = state.get_provider_record(sync_id, provider)
+        if provider_can_trigger_delete(provider, snapshot):
+            missing_sources.append(provider)
+
+    if not missing_sources:
+        return None
+
+    present_sources = [
+        event
+        for event in current_by_provider.values()
+        if event and is_source_candidate(event, blocked_title)[0]
+    ]
+    if not present_sources:
+        return "source-deleted:" + ",".join(sorted(missing_sources))
+
+    if all(snapshot_matches_event(state.get_provider_record(sync_id, event.provider), event, blocked_title) for event in present_sources):
+        return "source-deleted:" + ",".join(sorted(missing_sources))
+
+    return None
+
+
+def remember_event_snapshot(
+    state: SyncState,
+    sync_id: str,
+    provider: str,
+    provider_id: str,
+    desired: SyncEvent,
+    source: str,
+    mode: str,
+    blocked_title: str,
+    modified_at: Optional[datetime] = None,
+) -> None:
+    fingerprint = desired.fingerprint(mode, blocked_title)
+    state.set_provider_record(
+        sync_id=sync_id,
+        provider=provider,
+        provider_id=provider_id,
+        fingerprint=fingerprint,
+        source=source,
+        mode=mode,
+        modified_at=modified_at or now_utc(),
+    )
 
 
 def google_source_skip_reason(event: SyncEvent, blocked_title: str) -> Optional[str]:
@@ -1189,6 +1687,27 @@ def index_by_id(events: List[SyncEvent]) -> Dict[str, SyncEvent]:
     return {ev.provider_id: ev for ev in events}
 
 
+def delete_provider_event(
+    provider: str,
+    event: SyncEvent,
+    sync_id: str,
+    exchange: ExchangeClient,
+    icloud: ICloudClient,
+    google: Optional[GoogleClient],
+    dry_run: bool,
+    log: Logger,
+    detail: str = "",
+) -> None:
+    if provider == SOURCE_EXCHANGE:
+        exchange.delete_event(event, sync_id, dry_run, log, detail)
+        return
+    if provider == SOURCE_ICLOUD:
+        icloud.delete_event(event, sync_id, dry_run, log, detail)
+        return
+    if provider == SOURCE_GOOGLE and google:
+        google.delete_event(event, sync_id, dry_run, log, detail)
+
+
 def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
     log = Logger()
     state = SyncState(cfg.state_path)
@@ -1225,13 +1744,43 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
     # normalize sync ids
     for provider, events in by_provider.items():
         for ev in events:
-            if not ev.sync_id:
+            if ev.sync_id:
+                ev.sync_origin = ev.sync_origin or SYNC_ORIGIN_METADATA
+            else:
                 st_sync = state.get_sync_id(provider, ev.provider_id)
                 if st_sync:
                     ev.sync_id = st_sync
+                    ev.sync_origin = SYNC_ORIGIN_STATE
             if not ev.sync_id:
                 ev.sync_id = stable_sync_id(provider, ev.provider_id)
+                ev.sync_origin = SYNC_ORIGIN_STABLE
             state.set_mapping(provider, ev.provider_id, ev.sync_id)
+
+    reconcile_orphaned_events(by_provider, enabled_providers, state, cfg.google_blocked_title, log)
+
+    deduped_provider: Dict[str, List[SyncEvent]] = {
+        SOURCE_EXCHANGE: [],
+        SOURCE_ICLOUD: [],
+        SOURCE_GOOGLE: [],
+    }
+    for provider in enabled_providers:
+        deduped, extras = dedupe_provider_events(provider, by_provider[provider], state, cfg.google_blocked_title, log)
+        deduped_provider[provider] = deduped
+        for extra in extras:
+            delete_provider_event(
+                provider=provider,
+                event=extra,
+                sync_id=extra.sync_id or stable_sync_id(provider, extra.provider_id),
+                exchange=exchange,
+                icloud=icloud,
+                google=google,
+                dry_run=dry_run,
+                log=log,
+                detail="duplicate-cleanup",
+            )
+            state.forget_provider(provider, provider_id=extra.provider_id, sync_id=extra.sync_id)
+
+    by_provider = deduped_provider
 
     indices_sync = {p: index_by_sync(events) for p, events in by_provider.items()}
     indices_id = {p: index_by_id(events) for p, events in by_provider.items()}
@@ -1239,7 +1788,37 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
     all_sync_ids = sorted({ev.sync_id for events in by_provider.values() for ev in events if ev.sync_id})
 
     for sync_id in all_sync_ids:
-        group = [ev for p in enabled_providers for ev in by_provider[p] if ev.sync_id == sync_id]
+        current_by_provider: Dict[str, Optional[SyncEvent]] = {
+            provider: indices_sync[provider].get(sync_id)
+            for provider in enabled_providers
+        }
+
+        delete_reason = infer_group_delete_reason(
+            sync_id=sync_id,
+            current_by_provider=current_by_provider,
+            state=state,
+            blocked_title=cfg.google_blocked_title,
+        )
+        if delete_reason:
+            for provider in enabled_providers:
+                event = current_by_provider.get(provider)
+                if event:
+                    delete_provider_event(
+                        provider=provider,
+                        event=event,
+                        sync_id=sync_id,
+                        exchange=exchange,
+                        icloud=icloud,
+                        google=google,
+                        dry_run=dry_run,
+                        log=log,
+                        detail=delete_reason,
+                    )
+                state.forget_provider(provider, provider_id=event.provider_id if event else None, sync_id=sync_id)
+            state.forget_sync(sync_id)
+            continue
+
+        group = [event for event in current_by_provider.values() if event]
         if not group:
             continue
 
@@ -1259,7 +1838,7 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
 
         for provider in enabled_providers:
             mode = choose_target_mode(authoritative_source, provider)
-            existing = indices_sync[provider].get(sync_id)
+            existing = current_by_provider.get(provider)
             if not existing:
                 known_id = state.get_provider_id(provider, sync_id)
                 if known_id:
@@ -1302,8 +1881,22 @@ def sync_three_way(cfg: Config, dry_run: bool, window_days: int) -> None:
                 continue
 
             state.set_mapping(provider, provider_id, sync_id)
+            remember_event_snapshot(
+                state=state,
+                sync_id=sync_id,
+                provider=provider,
+                provider_id=provider_id,
+                desired=merged,
+                source=authoritative_source,
+                mode=mode,
+                blocked_title=cfg.google_blocked_title,
+                modified_at=event_modified_or_fallback(existing) if existing and existing.provider_id == provider_id else now_utc(),
+            )
 
-    state.save()
+    if dry_run:
+        log.info("STATE_SKIPPED", reason="dry-run")
+    else:
+        state.save()
     log.summary()
     print("SYNC_OK")
 
