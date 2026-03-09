@@ -645,8 +645,22 @@ def _set_csrf_cookie(response: Response, settings: AppSettings, token: str) -> N
 
 
 def _clear_auth_cookies(response: Response, settings: AppSettings) -> None:
-    response.delete_cookie(settings.session_cookie_name, path="/", domain=settings.session_cookie_domain)
-    response.delete_cookie(settings.csrf_cookie_name, path="/", domain=settings.session_cookie_domain)
+    response.delete_cookie(
+        settings.session_cookie_name,
+        path="/",
+        domain=settings.session_cookie_domain,
+        secure=settings.secure_cookies,
+        httponly=True,
+        samesite=settings.session_cookie_samesite,
+    )
+    response.delete_cookie(
+        settings.csrf_cookie_name,
+        path="/",
+        domain=settings.session_cookie_domain,
+        secure=settings.secure_cookies,
+        httponly=False,
+        samesite=settings.session_cookie_samesite,
+    )
 
 
 async def _validated_form(request: Request, csrf: CsrfManager, settings: AppSettings) -> Optional[Any]:

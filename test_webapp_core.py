@@ -1031,6 +1031,44 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("alle 15 Minuten", response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_logout_clears_secure_host_session_cookie(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-logout.sqlite3"
+        settings = self.make_settings(
+            database_path=database_path,
+            secure_cookies=True,
+            force_https=True,
+            session_cookie_name="__Host-aether_session",
+            session_cookie_domain=None,
+        )
+        client = TestClient(create_app(settings), base_url="https://testserver")
+
+        client.get("/setup")
+        setup_response = client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(setup_response.status_code, 303)
+        self.assertIn("__Host-aether_session", client.cookies)
+
+        logout_response = client.post(
+            "/logout",
+            data={"_csrf": self.csrf_token(client)},
+            follow_redirects=False,
+        )
+        self.assertEqual(logout_response.status_code, 303)
+        self.assertEqual(logout_response.headers["location"], "/login")
+        self.assertNotIn("__Host-aether_session", client.cookies)
+
+        dashboard_response = client.get("/app/dashboard", follow_redirects=False)
+        self.assertEqual(dashboard_response.status_code, 303)
+        self.assertEqual(dashboard_response.headers["location"], "/login")
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_calendar_month_view_and_logs_show_structured_changes(self) -> None:
         database_path = Path(tempfile.mkdtemp()) / "http-calendar-logs.sqlite3"
         settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
