@@ -7,6 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --shell /usr/sbin/nologin appuser
 
 COPY pyproject.toml README.md run_webapp.py sync_exchange_icloud_calendar.py /app/
@@ -21,4 +25,4 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "run_webapp:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "run_webapp:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
