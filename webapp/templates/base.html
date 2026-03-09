@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }} · {{ app_name }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}" />
+  </head>
+  <body class="app-body">
+    <div class="page-shell">
+      <aside class="sidebar surface-alt">
+        <div class="brand">
+          <div class="brand-mark soft-glow">A</div>
+          <div>
+            <div class="brand-kicker">Becker Sync Layer</div>
+            <h1>{{ app_name }}</h1>
+            <p class="brand-summary">Internal master calendar, provider orchestration and sync trace in one secured console.</p>
+          </div>
+        </div>
+        {% if user %}
+        <nav class="nav">
+          <a href="/app/dashboard"><span>Dashboard</span></a>
+          <a href="/app/calendar"><span>Hauptkalender</span></a>
+          <a href="/app/connections"><span>Verknuepfungen</span></a>
+          <a href="/app/logs"><span>Sync-Logs</span></a>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="sidebar-card">
+            <div class="brand-kicker">Routing Policy</div>
+            <p>Exchange und iCloud bleiben voll synchron. Google spiegelt geschuetzt als Blocked, ausser der Termin stammt nativ aus Google.</p>
+          </div>
+          <div class="user-chip">{{ user.email }}</div>
+          <form method="post" action="/logout" class="logout-form">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <button class="link-button" type="submit">Abmelden</button>
+          </form>
+        </div>
+        {% endif %}
+      </aside>
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Anmelden · {{ app_name }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}" />
+  </head>
+  <body class="auth-body">
+    <div class="auth-shell">
+      <section class="auth-stage">
+        <div class="brand-kicker">Protected Access</div>
+        <h1>{{ app_name }}</h1>
+        <p>Secure sync cockpit fuer den internen Hauptkalender, Provider-Verknuepfungen und den vollstaendigen Execution Trace.</p>
+        <div class="badge-row">
+          <span class="status-pill">Encrypted Secrets</span>
+          <span class="status-pill">CSRF Guarded</span>
+          <span class="status-pill">Background Sync</span>
+        </div>
+      </section>
+      <section class="auth-card">
+        <div class="brand-kicker">Login</div>
+        <h2>Willkommen zurueck</h2>
+        <p>Login fuer den Web-Hauptkalender, Verbindungsmanagement und Sync-Logs.</p>
+        {% if error_message %}<p class="auth-error">{{ error_message }}</p>{% endif %}
+        <form method="post" action="/login" class="stack">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <label>E-Mail<input type="email" name="email" required /></label>
+          <label>Passwort<input type="password" name="password" required /></label>
+          <button type="submit">Anmelden</button>
+        </form>
+      </section>
+    </div>
+  </body>
+</html>

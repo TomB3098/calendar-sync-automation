@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="brand-kicker">Execution Trace</div>
+    <h2>Synchronisations-Logs</h2>
+    <p>Hier laufen alle Jobs, Provider-Aktionen und Fehlermeldungen zusammen.</p>
+    {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
+    {% if sync_notice %}<p class="notice-line">{{ sync_notice }}</p>{% endif %}
+    {% if running_job %}<p class="meta-line">Aktiver Lauf: Job {{ running_job.id }} seit {{ running_job.started_at }}</p>{% endif %}
+  </div>
+  <form method="post" action="/app/sync">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Sync laeuft bereits" if running_job else "Sync jetzt starten" }}</button>
+  </form>
+</section>
+
+<section class="layout-split">
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Jobs</h3>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Status</th><th>Trigger</th><th>Start</th><th>Ende</th><th>Nachricht</th></tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td><span class="status-pill">{{ job.status }}</span></td>
+            <td>{{ job.triggered_by }}</td>
+            <td>{{ job.started_at }}</td>
+            <td>{{ job.finished_at or "-" }}</td>
+            <td>{{ job.message }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">Noch keine Jobs vorhanden.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Logeintraege</h3>
+    </div>
+    <div class="log-stream">
+      {% for entry in log_entries %}
+      <article class="log-line">
+        <div class="log-meta">{{ entry.created_at }} · {{ entry.level }} · {{ entry.provider }} · {{ entry.action }} · {{ entry.sync_id }}</div>
+        <strong>{{ entry.message }}</strong>
+        {% if entry.detail_line and entry.detail_line != entry.message %}
+        <p class="meta-line">{{ entry.detail_line }}</p>
+        {% endif %}
+        {% if entry.change_summary %}
+        <p class="change-summary">Geaendert: {{ entry.change_summary }}</p>
+        <div class="change-table">
+          <div class="change-row change-head">
+            <span>Feld</span>
+            <span>Vorher</span>
+            <span>Nachher</span>
+          </div>
+          {% for change in entry.changes %}
+          <div class="change-row">
+            <span class="change-label">{{ change.label }}</span>
+            <span class="change-value">{{ change.before }}</span>
+            <span class="change-value">{{ change.after }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if entry.error_text %}
+        <pre class="log-payload">{{ entry.error_text }}</pre>
+        {% elif entry.payload_preview %}
+        <pre class="log-payload">{{ entry.payload_preview }}</pre>
+        {% endif %}
+      </article>
+      {% else %}
+      <p>Keine Logeintraege vorhanden.</p>
+      {% endfor %}
+    </div>
+  </article>
+</section>
+{% endblock %}

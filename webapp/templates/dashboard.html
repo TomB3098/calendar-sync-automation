@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="brand-kicker">Migration Stage 1</div>
+    <h2>Interner Hauptkalender mit Sync-Konsole</h2>
+    <p>Die Webanwendung fuehrt interne Events, externe Connections und den manuellen Sync-Lauf an einem Ort zusammen.</p>
+    {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
+    {% if running_job %}<p class="meta-line">Aktiver Sync: Job {{ running_job.id }} laeuft seit {{ running_job.started_at }}</p>{% endif %}
+    <p class="meta-line">{{ auto_sync_status }}</p>
+  </div>
+  <form method="post" action="/app/sync">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Synchronisierung laeuft" if running_job else "Jetzt synchronisieren" }}</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h3>Auto-Sync</h3>
+  </div>
+  <form method="post" action="/app/settings/autosync" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+    <label>Intervall in Minuten
+      <input type="number" name="auto_sync_interval_minutes" min="0" max="1440" step="1" value="{{ auto_sync_interval_minutes }}" />
+    </label>
+    <p class="meta-line">`0` deaktiviert den automatischen Sync. Positive Werte starten Hintergrund-Synchronisationen in diesem Intervall.</p>
+    <button type="submit">Intervall speichern</button>
+  </form>
+</section>
+
+<section class="metric-grid">
+  <article class="metric-card"><span>Events</span><strong>{{ event_count }}</strong></article>
+  <article class="metric-card"><span>Connections</span><strong>{{ connection_count }}</strong></article>
+  <article class="metric-card"><span>Aktiv</span><strong>{{ active_connection_count }}</strong></article>
+  <article class="metric-card"><span>Jobs</span><strong>{{ job_count }}</strong></article>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h3>Letzte Sync-Jobs</h3>
+    <a href="/app/logs">Alle Logs</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Status</th><th>Trigger</th><th>Start</th><th>Nachricht</th></tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><span class="status-pill">{{ job.status }}</span></td>
+          <td>{{ job.triggered_by }}</td>
+          <td>{{ job.started_at }}</td>
+          <td>{{ job.message }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">Noch keine Sync-Jobs vorhanden.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

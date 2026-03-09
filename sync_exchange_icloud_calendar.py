@@ -22,6 +22,7 @@ Dry-Run:
 from __future__ import annotations
 
 import argparse
+import html
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -66,6 +68,10 @@ SYNC_ORIGIN_METADATA = "metadata"
 SYNC_ORIGIN_STATE = "state"
 SYNC_ORIGIN_STABLE = "stable"
 SYNC_ORIGIN_MATCHED = "matched"
+TRANSIENT_HTTP_STATUS_CODES = {408, 423, 429, 500, 502, 503, 504}
+ICLOUD_RETRY_ATTEMPTS = 4
+ICLOUD_RETRY_BASE_SECONDS = 1.0
+ICLOUD_RETRY_MAX_SECONDS = 8.0
 
 
 # ===== Utility =====
@@ -350,6 +356,200 @@ def json_fp(data: Dict[str, Any]) -> str:
     return hashlib.sha1(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+HTML_MARKUP_RE = re.compile(
+    r"<\s*(?:!doctype|html|head|body|meta|div|p|br|span|table|tr|td|th|ul|ol|li|blockquote|style|script|font)\b",
+    re.IGNORECASE,
+)
+SYNC_METADATA_LINE_RE = re.compile(r"^(?:AETHER_SYNC[A-Z_]*:|SOURCE_ID:)", re.IGNORECASE)
+
+
+class HTMLTextExtractor(HTMLParser):
+    _block_tags = {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "body",
+        "div",
+        "dl",
+        "dt",
+        "dd",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tbody",
+        "tfoot",
+        "thead",
+        "tr",
+        "ul",
+    }
+    _line_break_tags = {"br"}
+    _skip_tags = {"head", "script", "style", "title"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        tag_name = tag.lower()
+        if tag_name in self._skip_tags:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag_name == "li":
+            self._ensure_line_break()
+            self.parts.append("- ")
+            return
+        if tag_name in self._line_break_tags:
+            self._ensure_line_break()
+            return
+        if tag_name in self._block_tags:
+            self._ensure_line_break()
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_name = tag.lower()
+        if tag_name in self._skip_tags:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+        if tag_name in self._block_tags:
+            self._ensure_line_break()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth or not data:
+            return
+        self.parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self.parts)
+
+    def _ensure_line_break(self) -> None:
+        if not self.parts:
+            return
+        if self.parts[-1].endswith("\n"):
+            return
+        self.parts.append("\n")
+
+
+def decode_html_entities_deep(text: str, max_rounds: int = 6) -> str:
+    current = str(text or "")
+    for _ in range(max_rounds):
+        decoded = html.unescape(current)
+        decoded = decoded.replace("\xa0", " ")
+        if decoded == current:
+            break
+        current = decoded
+    return current
+
+
+def looks_like_html_markup(text: str) -> bool:
+    return bool(HTML_MARKUP_RE.search(str(text or "")))
+
+
+def normalize_multiline_text(text: str) -> str:
+    value = str(text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\u200b", "")
+    value = re.sub(r"[ \t\f\v]+\n", "\n", value)
+    value = re.sub(r"\n[ \t\f\v]+", "\n", value)
+    value = re.sub(r"[ \t\f\v]{2,}", " ", value)
+    value = "\n".join(line.rstrip() for line in value.split("\n"))
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def normalize_singleline_text(text: str) -> str:
+    value = decode_html_entities_deep(str(text or ""))
+    if looks_like_html_markup(value):
+        value = html_to_plain_text(value)
+    value = re.sub(r"\s+", " ", value.replace("\u200b", " "))
+    return value.strip()
+
+
+def html_to_plain_text(text: str) -> str:
+    parser = HTMLTextExtractor()
+    parser.feed(str(text or ""))
+    parser.close()
+    return normalize_multiline_text(parser.get_text())
+
+
+def strip_sync_metadata_lines(text: str) -> str:
+    lines = []
+    for line in normalize_multiline_text(text).split("\n"):
+        if SYNC_METADATA_LINE_RE.match(line.strip()):
+            continue
+        lines.append(line)
+    return normalize_multiline_text("\n".join(lines))
+
+
+def normalize_calendar_description(text: str, source_format: str = "auto") -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+
+    current = raw
+    for _ in range(10):
+        changed = False
+        if looks_like_html_markup(current):
+            stripped = html_to_plain_text(current)
+            if stripped != current:
+                current = stripped
+                changed = True
+
+        decoded = decode_html_entities_deep(current)
+        if decoded != current:
+            current = decoded
+            changed = True
+
+        stripped_metadata = strip_sync_metadata_lines(current)
+        if stripped_metadata != current:
+            current = stripped_metadata
+            changed = True
+
+        normalized = normalize_multiline_text(current)
+        if normalized != current:
+            current = normalized
+            changed = True
+
+        if not changed:
+            break
+    return current
+
+
+def request_exception_status(exc: requests.RequestException) -> Optional[int]:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return int(status) if isinstance(status, int) else None
+
+
+def is_transient_http_status(status: Optional[int]) -> bool:
+    return status in TRANSIENT_HTTP_STATUS_CODES
+
+
+def retry_backoff_seconds(attempt_index: int) -> float:
+    return min(ICLOUD_RETRY_MAX_SECONDS, ICLOUD_RETRY_BASE_SECONDS * (2 ** attempt_index))
+
+
 @dataclass
 class SyncEvent:
     provider: str
@@ -370,6 +570,9 @@ class SyncEvent:
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def fingerprint(self, mode: str, blocked_title: str) -> str:
+        normalized_title = normalize_singleline_text(self.title)
+        normalized_description = normalize_calendar_description(self.description, source_format="auto")
+        normalized_location = normalize_singleline_text(self.location)
         if mode == MODE_BLOCKED:
             payload = {
                 "title": blocked_title,
@@ -381,11 +584,11 @@ class SyncEvent:
             return json_fp(payload)
 
         payload = {
-            "title": self.title,
+            "title": normalized_title,
             "start": self.start,
             "end": self.end,
-            "description": self.description,
-            "location": self.location,
+            "description": normalized_description,
+            "location": normalized_location,
             "recurrence": self.recurrence,
             "all_day": self.start.get("all_day", False),
         }
@@ -508,7 +711,7 @@ class Logger:
         compact = " ".join([f"{k}={v}" for k, v in data.items() if v not in (None, "")])
         print(f"[sync] {message}" + (f" {compact}" if compact else ""))
 
-    def action(self, provider: str, action: str, sync_id: str, detail: str = "") -> None:
+    def action(self, provider: str, action: str, sync_id: str, detail: str = "", **_extra: Any) -> None:
         self._inc(f"{provider}_{action}")
         suffix = f" ({detail})" if detail else ""
         print(f"[sync] {provider}:{action} sync_id={sync_id}{suffix}")
@@ -824,11 +1027,14 @@ class ExchangeClient:
                     SyncEvent(
                         provider=SOURCE_EXCHANGE,
                         provider_id=str(it.get("id", "")),
-                        title=str(it.get("subject", "") or "(ohne Betreff)"),
+                        title=normalize_singleline_text(str(it.get("subject", "") or "(ohne Betreff)")),
                         start=start_n,
                         end=end_n,
-                        description=((it.get("body") or {}).get("content") or ""),
-                        location=((it.get("location") or {}).get("displayName") or ""),
+                        description=normalize_calendar_description(
+                            ((it.get("body") or {}).get("content") or ""),
+                            source_format=str((it.get("body") or {}).get("contentType") or "auto"),
+                        ),
+                        location=normalize_singleline_text(((it.get("location") or {}).get("displayName") or "")),
                         recurrence=rec,
                         sync_id=meta.get("sync_id") or None,
                         sync_origin=SYNC_ORIGIN_METADATA if meta.get("sync_id") else "",
@@ -843,9 +1049,9 @@ class ExchangeClient:
         return out
 
     def _payload_for_event(self, event: SyncEvent, sync_id: str, source: str, mode: str, blocked_title: str) -> Dict[str, Any]:
-        title = blocked_title if mode == MODE_BLOCKED else event.title
-        desc = "" if mode == MODE_BLOCKED else event.description
-        location = "" if mode == MODE_BLOCKED else event.location
+        title = blocked_title if mode == MODE_BLOCKED else normalize_singleline_text(event.title)
+        desc = "" if mode == MODE_BLOCKED else normalize_calendar_description(event.description, source_format="auto")
+        location = "" if mode == MODE_BLOCKED else normalize_singleline_text(event.location)
 
         if event.start.get("all_day"):
             start_date = event.start["date"] + "T00:00:00"
@@ -888,8 +1094,9 @@ class ExchangeClient:
         payload = self._payload_for_event(desired, sync_id, source, mode, blocked_title)
 
         if existing is None:
+            after_snapshot = event_log_snapshot(desired, mode, blocked_title)
             if dry_run:
-                log.action("exchange", "created", sync_id, "dry-run")
+                log.action("exchange", "created", sync_id, "dry-run", before=None, after=after_snapshot)
                 return f"dry-{uuid.uuid4()}"
             r = requests.post(
                 f"https://graph.microsoft.com/v1.0/users/{self.cfg.exchange_user}/events",
@@ -899,17 +1106,19 @@ class ExchangeClient:
             )
             r.raise_for_status()
             out = r.json()
-            log.action("exchange", "created", sync_id)
+            log.action("exchange", "created", sync_id, before=None, after=after_snapshot)
             return str(out.get("id"))
 
         desired_fp = desired.fingerprint(mode, blocked_title)
         existing_fp = existing.fingerprint(mode, blocked_title)
+        before_snapshot = event_log_snapshot(existing, existing.mode or mode, blocked_title)
+        after_snapshot = event_log_snapshot(desired, mode, blocked_title)
         if desired_fp == existing_fp and existing.source == source and existing.mode == mode:
-            log.action("exchange", "skipped", sync_id, "no-change")
+            log.action("exchange", "skipped", sync_id, "no-change", before=before_snapshot, after=after_snapshot)
             return existing.provider_id
 
         if dry_run:
-            log.action("exchange", "updated", sync_id, "dry-run")
+            log.action("exchange", "updated", sync_id, "dry-run", before=before_snapshot, after=after_snapshot)
             return existing.provider_id
 
         r = requests.patch(
@@ -919,13 +1128,14 @@ class ExchangeClient:
             timeout=self.cfg.timeout_sec,
         )
         r.raise_for_status()
-        log.action("exchange", "updated", sync_id)
+        log.action("exchange", "updated", sync_id, before=before_snapshot, after=after_snapshot)
         return existing.provider_id
 
     def delete_event(self, event: SyncEvent, sync_id: str, dry_run: bool, log: Logger, detail: str = "") -> None:
+        before_snapshot = event_log_snapshot(event, event.mode or MODE_FULL)
         if dry_run:
             suffix = "dry-run" if not detail else f"{detail},dry-run"
-            log.action("exchange", "deleted", sync_id, suffix)
+            log.action("exchange", "deleted", sync_id, suffix, before=before_snapshot, after=None)
             return
 
         r = requests.delete(
@@ -935,7 +1145,14 @@ class ExchangeClient:
         )
         if r.status_code not in {204, 404}:
             r.raise_for_status()
-        log.action("exchange", "deleted", sync_id, detail or ("already-missing" if r.status_code == 404 else ""))
+        log.action(
+            "exchange",
+            "deleted",
+            sync_id,
+            detail or ("already-missing" if r.status_code == 404 else ""),
+            before=before_snapshot,
+            after=None,
+        )
 
 
 class ICloudClient:
@@ -947,20 +1164,64 @@ class ICloudClient:
     def _auth(self) -> HTTPBasicAuth:
         return HTTPBasicAuth(self.cfg.icloud_user, self.cfg.icloud_app_pw)
 
-    def discover(self) -> Tuple[str, str]:
+    def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        log: Optional[Logger] = None,
+        operation: str = "",
+        **kwargs: Any,
+    ) -> requests.Response:
+        last_exc: Optional[Exception] = None
+        for attempt in range(ICLOUD_RETRY_ATTEMPTS):
+            try:
+                response = requests.request(method, url, timeout=self.cfg.timeout_sec, **kwargs)
+                if is_transient_http_status(response.status_code) and attempt < ICLOUD_RETRY_ATTEMPTS - 1:
+                    if log:
+                        log.warn(
+                            "icloud_transient_retry",
+                            operation=operation or method.lower(),
+                            status=response.status_code,
+                            attempt=attempt + 1,
+                            url=url,
+                        )
+                    time.sleep(retry_backoff_seconds(attempt))
+                    continue
+                return response
+            except requests.RequestException as exc:
+                last_exc = exc
+                status = request_exception_status(exc)
+                if not is_transient_http_status(status) or attempt >= ICLOUD_RETRY_ATTEMPTS - 1:
+                    raise
+                if log:
+                    log.warn(
+                        "icloud_transient_retry",
+                        operation=operation or method.lower(),
+                        status=status or "request-error",
+                        attempt=attempt + 1,
+                        url=url,
+                    )
+                time.sleep(retry_backoff_seconds(attempt))
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"iCloud request failed without response: {method} {url}")
+
+    def discover(self, log: Optional[Logger] = None) -> Tuple[str, str]:
         if self._base and self._cal_href:
             return self._base, self._cal_href
 
         auth = self._auth()
         body = '''<?xml version="1.0" encoding="UTF-8"?>
 <D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><C:calendar-home-set/></D:prop></D:propfind>'''
-        r = requests.request(
+        r = self._request_with_retry(
             "PROPFIND",
             "https://caldav.icloud.com" + self.cfg.icloud_principal_path,
+            log=log,
+            operation="discover-home",
             headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
             data=body,
             auth=auth,
-            timeout=self.cfg.timeout_sec,
         )
         r.raise_for_status()
         m = re.search(r"<calendar-home-set[^>]*>\s*<href[^>]*>([^<]+)</href>", r.text)
@@ -971,13 +1232,14 @@ class ICloudClient:
 
         body2 = '''<?xml version="1.0" encoding="UTF-8"?>
 <D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><D:displayname/></D:prop></D:propfind>'''
-        r2 = requests.request(
+        r2 = self._request_with_retry(
             "PROPFIND",
             home_url,
+            log=log,
+            operation="discover-calendars",
             headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
             data=body2,
             auth=auth,
-            timeout=self.cfg.timeout_sec,
         )
         r2.raise_for_status()
 
@@ -1002,7 +1264,7 @@ class ICloudClient:
         return base, cal_href
 
     def list_events(self, start: datetime, end: datetime, log: Logger) -> List[SyncEvent]:
-        base, cal_href = self.discover()
+        base, cal_href = self.discover(log)
         auth = self._auth()
         body = f'''<?xml version="1.0" encoding="UTF-8"?>
 <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -1016,15 +1278,16 @@ class ICloudClient:
         <C:time-range start="{start.strftime('%Y%m%dT000000Z')}" end="{end.strftime('%Y%m%dT235959Z')}"/>
       </C:comp-filter>
     </C:comp-filter>
-  </C:filter>
+      </C:filter>
 </C:calendar-query>'''
-        r = requests.request(
+        r = self._request_with_retry(
             "REPORT",
             join_absolute_url(base, cal_href),
+            log=log,
+            operation="list-events",
             headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
             data=body,
             auth=auth,
-            timeout=self.cfg.timeout_sec,
         )
         r.raise_for_status()
 
@@ -1065,11 +1328,14 @@ class ICloudClient:
                 SyncEvent(
                     provider=SOURCE_ICLOUD,
                     provider_id=href,
-                    title=ics_unescape(parse_ics_value(lines, "SUMMARY") or "(ohne Betreff)"),
+                    title=normalize_singleline_text(ics_unescape(parse_ics_value(lines, "SUMMARY") or "(ohne Betreff)")),
                     start=start_n,
                     end=end_n,
-                    description=ics_unescape(parse_ics_value(lines, "DESCRIPTION") or ""),
-                    location=ics_unescape(parse_ics_value(lines, "LOCATION") or ""),
+                    description=normalize_calendar_description(
+                        ics_unescape(parse_ics_value(lines, "DESCRIPTION") or ""),
+                        source_format="auto",
+                    ),
+                    location=normalize_singleline_text(ics_unescape(parse_ics_value(lines, "LOCATION") or "")),
                     recurrence=rec,
                     sync_id=parse_ics_value(lines, ICLOUD_META_SYNC_ID) or None,
                     sync_origin=SYNC_ORIGIN_METADATA if parse_ics_value(lines, ICLOUD_META_SYNC_ID) else "",
@@ -1084,9 +1350,9 @@ class ICloudClient:
         return out
 
     def _build_ics(self, event: SyncEvent, sync_id: str, source: str, mode: str, blocked_title: str, uid: str) -> str:
-        title = blocked_title if mode == MODE_BLOCKED else event.title
-        description = "" if mode == MODE_BLOCKED else event.description
-        location = "" if mode == MODE_BLOCKED else event.location
+        title = blocked_title if mode == MODE_BLOCKED else normalize_singleline_text(event.title)
+        description = "" if mode == MODE_BLOCKED else normalize_calendar_description(event.description, source_format="auto")
+        location = "" if mode == MODE_BLOCKED else normalize_singleline_text(event.location)
 
         start_params, start_value = normalized_to_ics(event.start)
         end_params, end_value = normalized_to_ics(event.end, end=True)
@@ -1135,12 +1401,14 @@ class ICloudClient:
         dry_run: bool,
         log: Logger,
     ) -> str:
-        base, cal_href = self.discover()
+        base, cal_href = self.discover(log)
         auth = self._auth()
 
         desired_fp = desired.fingerprint(mode, blocked_title)
+        before_snapshot = event_log_snapshot(existing, existing.mode or mode, blocked_title) if existing else None
+        after_snapshot = event_log_snapshot(desired, mode, blocked_title)
         if existing and desired_fp == existing.fingerprint(mode, blocked_title) and existing.source == source and existing.mode == mode:
-            log.action("icloud", "skipped", sync_id, "no-change")
+            log.action("icloud", "skipped", sync_id, "no-change", before=before_snapshot, after=after_snapshot)
             return existing.provider_id
 
         uid = existing.uid if existing and existing.uid else str(uuid.uuid4())
@@ -1149,37 +1417,48 @@ class ICloudClient:
 
         if dry_run:
             action = "updated" if existing else "created"
-            log.action("icloud", action, sync_id, "dry-run")
+            log.action("icloud", action, sync_id, "dry-run", before=before_snapshot, after=after_snapshot)
             return href
 
-        r = requests.put(
+        r = self._request_with_retry(
+            "PUT",
             join_absolute_url(base, href),
+            log=log,
+            operation="upsert-event",
             data=ics.encode("utf-8"),
             headers={"Content-Type": "text/calendar; charset=utf-8"},
             auth=auth,
-            timeout=self.cfg.timeout_sec,
         )
         r.raise_for_status()
         action = "updated" if existing else "created"
-        log.action("icloud", action, sync_id)
+        log.action("icloud", action, sync_id, before=before_snapshot, after=after_snapshot)
         return href
 
     def delete_event(self, event: SyncEvent, sync_id: str, dry_run: bool, log: Logger, detail: str = "") -> None:
-        base, _cal_href = self.discover()
+        base, _cal_href = self.discover(log)
+        before_snapshot = event_log_snapshot(event, event.mode or MODE_FULL)
         if dry_run:
             suffix = "dry-run" if not detail else f"{detail},dry-run"
-            log.action("icloud", "deleted", sync_id, suffix)
+            log.action("icloud", "deleted", sync_id, suffix, before=before_snapshot, after=None)
             return
 
-        r = requests.request(
+        r = self._request_with_retry(
             "DELETE",
             join_absolute_url(base, event.href or event.provider_id),
+            log=log,
+            operation="delete-event",
             auth=self._auth(),
-            timeout=self.cfg.timeout_sec,
         )
         if r.status_code not in {204, 404}:
             r.raise_for_status()
-        log.action("icloud", "deleted", sync_id, detail or ("already-missing" if r.status_code == 404 else ""))
+        log.action(
+            "icloud",
+            "deleted",
+            sync_id,
+            detail or ("already-missing" if r.status_code == 404 else ""),
+            before=before_snapshot,
+            after=None,
+        )
 
 
 class GoogleClient:
@@ -1303,11 +1582,11 @@ class GoogleClient:
                     SyncEvent(
                         provider=SOURCE_GOOGLE,
                         provider_id=str(it.get("id", "")),
-                        title=str(it.get("summary", "") or "(ohne Betreff)"),
+                        title=normalize_singleline_text(str(it.get("summary", "") or "(ohne Betreff)")),
                         start=start_n,
                         end=end_n,
-                        description=str(it.get("description", "") or ""),
-                        location=str(it.get("location", "") or ""),
+                        description=normalize_calendar_description(str(it.get("description", "") or ""), source_format="auto"),
+                        location=normalize_singleline_text(str(it.get("location", "") or "")),
                         recurrence=list(it.get("recurrence", []) or []),
                         sync_id=meta.get("sync_id") or None,
                         sync_origin=SYNC_ORIGIN_METADATA if meta.get("sync_id") else "",
@@ -1323,9 +1602,9 @@ class GoogleClient:
         return out
 
     def _payload_for_event(self, event: SyncEvent, sync_id: str, source: str, mode: str, blocked_title: str) -> Dict[str, Any]:
-        title = blocked_title if mode == MODE_BLOCKED else event.title
-        description = "" if mode == MODE_BLOCKED else event.description
-        location = "" if mode == MODE_BLOCKED else event.location
+        title = blocked_title if mode == MODE_BLOCKED else normalize_singleline_text(event.title)
+        description = "" if mode == MODE_BLOCKED else normalize_calendar_description(event.description, source_format="auto")
+        location = "" if mode == MODE_BLOCKED else normalize_singleline_text(event.location)
 
         if event.start.get("all_day"):
             start_obj = {"date": event.start["date"]}
@@ -1377,33 +1656,67 @@ class GoogleClient:
         if existing:
             desired_fp = desired.fingerprint(mode, blocked_title)
             existing_fp = existing.fingerprint(mode, blocked_title)
+            before_snapshot = event_log_snapshot(existing, existing.mode or mode, blocked_title)
+            after_snapshot = event_log_snapshot(desired, mode, blocked_title)
             if desired_fp == existing_fp and existing.source == source and existing.mode == mode:
-                log.action("google", "skipped", sync_id, "no-change")
+                log.action("google", "skipped", sync_id, "no-change", before=before_snapshot, after=after_snapshot)
                 return existing.provider_id
+        else:
+            before_snapshot = None
+            after_snapshot = event_log_snapshot(desired, mode, blocked_title)
 
         if dry_run:
             action = "updated" if existing else "created"
-            log.action("google", action, sync_id, "dry-run")
+            log.action("google", action, sync_id, "dry-run", before=before_snapshot, after=after_snapshot)
             return existing.provider_id if existing else f"dry-{uuid.uuid4()}"
 
+        recreate_existing = bool(
+            existing
+            and bool(existing.start.get("all_day")) != bool(desired.start.get("all_day"))
+        )
         if existing:
+            if recreate_existing:
+                delete_url = f"https://www.googleapis.com/calendar/v3/calendars/{self.cfg.google_calendar_id}/events/{existing.provider_id}"
+                delete_response = requests.delete(delete_url, headers=self._headers(), timeout=self.cfg.timeout_sec)
+                if delete_response.status_code not in {204, 404, 410}:
+                    delete_response.raise_for_status()
+                create_url = f"https://www.googleapis.com/calendar/v3/calendars/{self.cfg.google_calendar_id}/events"
+                create_response = requests.post(
+                    create_url,
+                    headers=self._headers(),
+                    data=json.dumps(payload),
+                    timeout=self.cfg.timeout_sec,
+                )
+                create_response.raise_for_status()
+                out = create_response.json()
+                log.action(
+                    "google",
+                    "updated",
+                    sync_id,
+                    "recreated-time-model",
+                    before=before_snapshot,
+                    after=after_snapshot,
+                )
+                return str(out.get("id"))
+
             url = f"https://www.googleapis.com/calendar/v3/calendars/{self.cfg.google_calendar_id}/events/{existing.provider_id}"
             r = requests.patch(url, headers=self._headers(), data=json.dumps(payload), timeout=self.cfg.timeout_sec)
             r.raise_for_status()
-            log.action("google", "updated", sync_id)
+            log.action("google", "updated", sync_id, before=before_snapshot, after=after_snapshot)
             return existing.provider_id
 
         url = f"https://www.googleapis.com/calendar/v3/calendars/{self.cfg.google_calendar_id}/events"
         r = requests.post(url, headers=self._headers(), data=json.dumps(payload), timeout=self.cfg.timeout_sec)
         r.raise_for_status()
         out = r.json()
-        log.action("google", "created", sync_id)
+        log.action("google", "created", sync_id, before=before_snapshot, after=after_snapshot)
         return str(out.get("id"))
 
     def delete_event(self, event: SyncEvent, sync_id: str, dry_run: bool, log: Logger, detail: str = "") -> None:
+        before_snapshot = event_log_snapshot(event, event.mode or MODE_FULL)
         if dry_run:
             suffix = "dry-run" if not detail else f"{detail},dry-run"
-            log.action("google", "deleted", sync_id, suffix)
+            log.action("google", "deleted", sync_id, suffix, before=before_snapshot, after=None)
             return
 
         url = f"https://www.googleapis.com/calendar/v3/calendars/{self.cfg.google_calendar_id}/events/{event.provider_id}"
@@ -1411,7 +1724,7 @@ class GoogleClient:
         if r.status_code not in {204, 404, 410}:
             r.raise_for_status()
         detail_text = detail or ("already-missing" if r.status_code in {404, 410} else "")
-        log.action("google", "deleted", sync_id, detail_text)
+        log.action("google", "deleted", sync_id, detail_text, before=before_snapshot, after=None)
 
 
 def event_modified_or_fallback(event: SyncEvent) -> datetime:
@@ -1428,6 +1741,26 @@ def effective_event_mode(event: SyncEvent, blocked_title: str) -> str:
     if google_source_skip_reason(event, blocked_title) == "google-blocked-mirror":
         return MODE_BLOCKED
     return MODE_FULL
+
+
+def event_log_snapshot(event: Optional[SyncEvent], mode: Optional[str], blocked_title: str = "Blocked") -> Optional[Dict[str, Any]]:
+    if event is None:
+        return None
+    effective_mode = (mode or effective_event_mode(event, blocked_title)).strip().lower()
+    title = blocked_title if effective_mode == MODE_BLOCKED else normalize_singleline_text(event.title)
+    description = "" if effective_mode == MODE_BLOCKED else normalize_calendar_description(event.description, source_format="auto")
+    location = "" if effective_mode == MODE_BLOCKED else normalize_singleline_text(event.location)
+    starts_at = event.start.get("date") if event.start.get("all_day") else event.start.get("dateTime")
+    ends_at = event.end.get("date") if event.end.get("all_day") else event.end.get("dateTime")
+    return {
+        "title": title,
+        "starts_at": str(starts_at or ""),
+        "ends_at": str(ends_at or ""),
+        "all_day": bool(event.start.get("all_day")),
+        "description": description,
+        "location": location,
+        "recurrence": [line for line in event.recurrence or [] if line.strip()],
+    }
 
 
 def event_snapshot_fingerprint(event: SyncEvent, blocked_title: str) -> str:

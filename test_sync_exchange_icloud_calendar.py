@@ -1,14 +1,83 @@
+import json
 import tempfile
 import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import requests
 import sync_exchange_icloud_calendar as mod
 
 
 class CalendarSyncLogicTests(unittest.TestCase):
+    def make_cfg(self) -> mod.Config:
+        return mod.Config(
+            exchange_tenant_id="tenant",
+            exchange_client_id="client",
+            exchange_client_secret="secret",
+            exchange_user="user@example.com",
+            icloud_user="icloud@example.com",
+            icloud_app_pw="pw",
+            icloud_principal_path="/principal/",
+            icloud_target_calendar_display="Kalender",
+            google_enabled=False,
+            google_calendar_id="primary",
+            google_blocked_title="Blocked",
+            google_oauth_client_id="",
+            google_oauth_client_secret="",
+            google_oauth_refresh_token="",
+            google_service_account_json="",
+            google_impersonate_user="",
+            state_path=Path(tempfile.mkdtemp()) / "state.json",
+            dry_run=False,
+            window_days=30,
+            timeout_sec=5,
+            write_delay_ms=0,
+            max_writes_per_run=500,
+            write_backoff_enabled=False,
+            write_backoff_base_ms=100,
+            write_backoff_max_ms=1000,
+        )
+
+    def test_normalize_calendar_description_removes_exchange_html_wrapper(self) -> None:
+        raw = (
+            '<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head>'
+            '<body>Hotel &amp;amp; Flug<br>Tag&nbsp;2</body></html>'
+        )
+        self.assertEqual(mod.normalize_calendar_description(raw, source_format="html"), "Hotel & Flug\nTag 2")
+
+    def test_sync_event_fingerprint_matches_plain_text_and_html_wrapped_description(self) -> None:
+        html_event = mod.SyncEvent(
+            provider=mod.SOURCE_EXCHANGE,
+            provider_id="ex-1",
+            title="Trip",
+            start={"all_day": False, "dateTime": "2026-03-10T09:00:00Z"},
+            end={"all_day": False, "dateTime": "2026-03-10T10:00:00Z"},
+            description="<html><body>Hotel &amp;amp; Flug<br>Tag 2</body></html>",
+            location="Room",
+        )
+        plain_event = mod.SyncEvent(
+            provider=mod.SOURCE_ICLOUD,
+            provider_id="/calendar/event.ics",
+            title="Trip",
+            start={"all_day": False, "dateTime": "2026-03-10T09:00:00Z"},
+            end={"all_day": False, "dateTime": "2026-03-10T10:00:00Z"},
+            description="Hotel & Flug\nTag 2",
+            location="Room",
+        )
+        self.assertEqual(
+            html_event.fingerprint(mod.MODE_FULL, "Blocked"),
+            plain_event.fingerprint(mod.MODE_FULL, "Blocked"),
+        )
+
+    def test_normalize_calendar_description_removes_legacy_sync_markers(self) -> None:
+        raw = (
+            '<html><body>&lt;html&gt;&lt;body&gt;AETHER_SYNC_SRC:EXCHANGE&lt;br&gt;'
+            'SOURCE_ID:abc123&lt;/body&gt;&lt;/html&gt;</body></html>'
+        )
+        self.assertEqual(mod.normalize_calendar_description(raw, source_format="auto"), "")
+
     def test_datetime_normalization_handles_offsets_and_tzid(self) -> None:
         self.assertEqual(
             mod.normalize_google_dt({"dateTime": "2026-03-07T10:00:00+02:00"}),
@@ -61,6 +130,79 @@ class CalendarSyncLogicTests(unittest.TestCase):
 
         self.assertEqual(orphan.sync_id, "sync-known")
         self.assertEqual(orphan.sync_origin, mod.SYNC_ORIGIN_MATCHED)
+
+    def test_icloud_request_retries_transient_503(self) -> None:
+        client = mod.ICloudClient(self.make_cfg())
+        first = Mock(status_code=503)
+        first.raise_for_status.side_effect = None
+        second = Mock(status_code=207)
+        second.raise_for_status.side_effect = None
+        log = mod.Logger()
+
+        with patch.object(mod.requests, "request", side_effect=[first, second]) as request_mock:
+            with patch.object(mod.time, "sleep", return_value=None) as sleep_mock:
+                response = client._request_with_retry("REPORT", "https://example.test/caldav", log=log, operation="list-events")
+
+        self.assertIs(response, second)
+        self.assertEqual(request_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+
+    def test_google_upsert_recreates_event_when_time_model_changes(self) -> None:
+        cfg = self.make_cfg()
+        cfg.google_enabled = True
+        client = mod.GoogleClient(cfg)
+        client._token = "token"
+        log = mod.Logger()
+
+        existing = mod.SyncEvent(
+            provider=mod.SOURCE_GOOGLE,
+            provider_id="google-old",
+            title="Urlaub",
+            start={"all_day": False, "dateTime": "2026-03-05T00:00:00Z"},
+            end={"all_day": False, "dateTime": "2026-03-13T00:00:00Z"},
+            sync_id="sync-urlaub",
+            source=mod.SOURCE_ICLOUD,
+            mode=mod.MODE_BLOCKED,
+        )
+        desired = mod.SyncEvent(
+            provider=mod.SOURCE_ICLOUD,
+            provider_id="icloud-1",
+            title="Urlaub",
+            start={"all_day": True, "date": "2026-03-05"},
+            end={"all_day": True, "date": "2026-03-13"},
+            sync_id="sync-urlaub",
+            source=mod.SOURCE_ICLOUD,
+            mode=mod.MODE_BLOCKED,
+        )
+
+        delete_response = Mock(status_code=204)
+        delete_response.raise_for_status.side_effect = None
+        create_response = Mock(status_code=200)
+        create_response.raise_for_status.side_effect = None
+        create_response.json.return_value = {"id": "google-new"}
+
+        with patch.object(mod.requests, "delete", return_value=delete_response) as delete_mock:
+            with patch.object(mod.requests, "post", return_value=create_response) as post_mock:
+                with patch.object(mod.requests, "patch") as patch_mock:
+                    new_id = client.upsert_event(
+                        existing=existing,
+                        desired=desired,
+                        sync_id="sync-urlaub",
+                        source=mod.SOURCE_ICLOUD,
+                        mode=mod.MODE_BLOCKED,
+                        blocked_title="Blocked",
+                        dry_run=False,
+                        log=log,
+                    )
+
+        self.assertEqual(new_id, "google-new")
+        delete_mock.assert_called_once()
+        post_mock.assert_called_once()
+        patch_mock.assert_not_called()
+        payload = json.loads(post_mock.call_args.kwargs["data"])
+        self.assertEqual(payload["start"], {"date": "2026-03-05"})
+        self.assertEqual(payload["end"], {"date": "2026-03-13"})
+        self.assertEqual(payload["summary"], "Blocked")
 
     def test_infer_group_delete_reason_when_source_missing(self) -> None:
         state = mod.SyncState(Path(tempfile.mkdtemp()) / "state.json")
@@ -268,34 +410,7 @@ class CalendarSyncLogicTests(unittest.TestCase):
         self.assertEqual(log.stats.get("write_cap_skipped", 0), 1)
 
     def test_sync_three_way_propagates_delete(self) -> None:
-        state_path = Path(tempfile.mkdtemp()) / "state.json"
-        cfg = mod.Config(
-            exchange_tenant_id="tenant",
-            exchange_client_id="client",
-            exchange_client_secret="secret",
-            exchange_user="user@example.com",
-            icloud_user="icloud@example.com",
-            icloud_app_pw="pw",
-            icloud_principal_path="/principal/",
-            icloud_target_calendar_display="Kalender",
-            google_enabled=False,
-            google_calendar_id="primary",
-            google_blocked_title="Blocked",
-            google_oauth_client_id="",
-            google_oauth_client_secret="",
-            google_oauth_refresh_token="",
-            google_service_account_json="",
-            google_impersonate_user="",
-            state_path=state_path,
-            dry_run=False,
-            window_days=30,
-            timeout_sec=5,
-            write_delay_ms=0,
-            max_writes_per_run=500,
-            write_backoff_enabled=False,
-            write_backoff_base_ms=100,
-            write_backoff_max_ms=1000,
-        )
+        cfg = self.make_cfg()
 
         sync_id = "sync-1"
         exchange_event = mod.SyncEvent(

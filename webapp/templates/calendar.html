@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="brand-kicker">Internal Master Calendar</div>
+    <h2>Hauptkalender</h2>
+    <p>Hier liegen die internen Web-Events, die in die angebundenen Provider gespiegelt werden.</p>
+    {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
+  </div>
+</section>
+
+<section class="panel month-board">
+  <div class="panel-head month-head">
+    <div>
+      <h3>Monatsansicht</h3>
+      <p class="meta-line">{{ calendar_month.label }} · {{ calendar_month.event_count }} sichtbare Events</p>
+    </div>
+    <div class="button-row">
+      <a class="ghost-link" href="/app/calendar?month={{ calendar_month.prev_value }}">Vorheriger Monat</a>
+      <span class="status-pill">{{ calendar_month.value }}</span>
+      <a class="ghost-link" href="/app/calendar?month={{ calendar_month.next_value }}">Naechster Monat</a>
+    </div>
+  </div>
+  <div class="month-weekdays">
+    {% for weekday in calendar_month.weekday_labels %}
+    <span>{{ weekday }}</span>
+    {% endfor %}
+  </div>
+  <div class="month-grid">
+    {% for week in calendar_month.weeks %}
+      {% for day in week %}
+      <article class="day-cell{% if not day.is_current_month %} day-cell-muted{% endif %}{% if day.is_today %} day-cell-today{% endif %}">
+        <header class="day-head">
+          <span class="day-number">{{ "%02d"|format(day.day_number) }}</span>
+          <span class="day-weekday">{{ day.weekday_label }}</span>
+        </header>
+        <div class="day-events">
+          {% for item in day.events %}
+          <a class="calendar-chip source-{{ item.source_slug }}{% if item.continues_before %} chip-continues-before{% endif %}{% if item.continues_after %} chip-continues-after{% endif %}" href="{{ item.href }}">
+            <span class="chip-time">{{ item.time_badge }}</span>
+            <strong>{{ item.title }}</strong>
+            <span class="chip-source">{{ item.source_label }}</span>
+          </a>
+          {% endfor %}
+          {% if day.overflow_count %}
+          <div class="calendar-overflow">+{{ day.overflow_count }} weitere Eintraege</div>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    {% endfor %}
+  </div>
+</section>
+
+<section class="layout-split">
+  <article class="panel">
+    <div class="panel-head">
+      <h3>{% if edit_event %}Event bearbeiten{% else %}Neues Event{% endif %}</h3>
+    </div>
+    <form method="post" action="/app/events" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      {% if edit_event %}<input type="hidden" name="event_id" value="{{ edit_event.id }}" />{% endif %}
+      <label>Titel<input type="text" name="title" value="{{ edit_event.title if edit_event else '' }}" required /></label>
+      <label>Beschreibung<textarea name="description">{{ edit_event.description if edit_event else '' }}</textarea></label>
+      <label>Ort<input type="text" name="location" value="{{ edit_event.location if edit_event else '' }}" /></label>
+      <label>Start (UTC)<input type="datetime-local" name="starts_at" value="{{ edit_event.starts_at_input if edit_event else '' }}" required /></label>
+      <label>Ende (UTC)<input type="datetime-local" name="ends_at" value="{{ edit_event.ends_at_input if edit_event else '' }}" required /></label>
+      <label>RRULE / Wiederholung<textarea name="recurrence_rule">{{ edit_event.recurrence_rule if edit_event else '' }}</textarea></label>
+      <div class="button-row">
+        <button type="submit">{% if edit_event %}Speichern{% else %}Event anlegen{% endif %}</button>
+        {% if edit_event %}<a class="ghost-link" href="/app/calendar">Abbrechen</a>{% endif %}
+      </div>
+    </form>
+  </article>
+
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Events im Monat</h3>
+    </div>
+    <div class="event-list">
+      {% for event in calendar_month.events %}
+      <article class="event-card">
+        <header>
+          <div>
+            <strong>{{ event.title }}</strong>
+            <div class="meta-line">{{ event.time_badge }}</div>
+            <div class="meta-line">{{ event.starts_at_human }} bis {{ event.ends_at_human }}</div>
+          </div>
+          <span class="status-pill">{{ event.source_label }}</span>
+        </header>
+        {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
+        {% if event.location %}<p class="meta-line">Ort: {{ event.location }}</p>{% endif %}
+        <p class="meta-line">sync_id: {{ event.sync_id }}</p>
+        <div class="button-row">
+          <a class="ghost-link" href="/app/calendar?edit={{ event.id }}">Bearbeiten</a>
+          <form method="post" action="/app/events/{{ event.id }}/delete">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <button class="danger" type="submit">Loeschen</button>
+          </form>
+        </div>
+      </article>
+      {% else %}
+      <p>In diesem Monat sind keine internen Events vorhanden.</p>
+      {% endfor %}
+    </div>
+  </article>
+</section>
+{% endblock %}

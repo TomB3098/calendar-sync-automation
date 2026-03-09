@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="brand-kicker">Provider Administration</div>
+    <h2>Kalender-Verknuepfungen</h2>
+    <p>Google, Exchange und iCloud koennen als aktive Sync-Ziele oder Import-Quellen hinterlegt werden.</p>
+    {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
+  </div>
+</section>
+
+<section class="layout-split">
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Neue Verbindung</h3>
+    </div>
+    <form method="post" action="/app/connections" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <label>Provider
+        <select name="provider" required>
+          <option value="google">Google</option>
+          <option value="exchange">Exchange</option>
+          <option value="icloud">iCloud</option>
+        </select>
+      </label>
+      <label>Anzeigename<input type="text" name="display_name" required /></label>
+      <label>Blocked-Titel<input type="text" name="blocked_title" value="Blocked" /></label>
+      <p class="meta-line">Policy: Exchange und iCloud erhalten immer volle Details. Google bekommt Spiegel aus Exchange/iCloud als Blocked, native Google-Termine bleiben voll.</p>
+      <label>Timeout Sekunden<input type="number" name="timeout_sec" value="30" min="5" /></label>
+
+      <h4>Exchange</h4>
+      <label>Tenant ID<input type="text" name="exchange_tenant_id" /></label>
+      <label>Client ID<input type="text" name="exchange_client_id" /></label>
+      <label>Client Secret<input type="password" name="exchange_client_secret" autocomplete="new-password" /></label>
+      <label>User / Mailbox<input type="text" name="exchange_user" /></label>
+
+      <h4>iCloud</h4>
+      <label>iCloud User<input type="text" name="icloud_user" /></label>
+      <label>App Password<input type="password" name="icloud_app_pw" autocomplete="new-password" /></label>
+      <label>Principal Path<input type="text" name="icloud_principal_path" /></label>
+      <label>Calendar Displayname<input type="text" name="icloud_target_calendar_display" value="Kalender" /></label>
+
+      <h4>Google</h4>
+      <label>Calendar ID<input type="text" name="google_calendar_id" value="primary" /></label>
+      <label>OAuth Client ID<input type="text" name="google_oauth_client_id" /></label>
+      <label>OAuth Client Secret<input type="password" name="google_oauth_client_secret" autocomplete="new-password" /></label>
+      <label>OAuth Refresh Token<textarea name="google_oauth_refresh_token" autocomplete="off"></textarea></label>
+      <label>Service Account JSON / Pfad<textarea name="google_service_account_json" autocomplete="off"></textarea></label>
+      <label>Impersonate User<input type="text" name="google_impersonate_user" /></label>
+
+      <button type="submit">Verbindung speichern</button>
+    </form>
+  </article>
+
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Aktuelle Verbindungen</h3>
+    </div>
+    <div class="connection-list">
+      {% for connection in connections %}
+      <article class="connection-card">
+        <header>
+          <div>
+            <strong>{{ connection.display_name }}</strong>
+            <div class="meta-line">{{ connection.provider }} · {{ connection.policy_label }}</div>
+          </div>
+          <span class="status-pill">{{ "aktiv" if connection.is_active else "pausiert" }}</span>
+        </header>
+        <pre>{{ connection.settings_pretty }}</pre>
+        <form method="post" action="/app/connections/{{ connection.id }}/toggle">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button type="submit">{{ "Pausieren" if connection.is_active else "Aktivieren" }}</button>
+        </form>
+      </article>
+      {% else %}
+      <p>Keine Verbindungen vorhanden.</p>
+      {% endfor %}
+    </div>
+  </article>
+</section>
+{% endblock %}

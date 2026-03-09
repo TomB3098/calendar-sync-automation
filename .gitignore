@@ -1,7 +1,10 @@
 .env*
+!.env.example
 *.log
+*.egg-info/
 __pycache__/
 *.pyc
 *.pyo
 memory/
 state/
+data/
