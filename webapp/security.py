@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 import secrets
+import struct
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 try:
     from argon2 import PasswordHasher as Argon2PasswordHasher
@@ -57,6 +61,13 @@ def parse_utc(raw: Optional[str]) -> Optional[datetime]:
 class SessionData:
     user_id: int
     session_id: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class PendingLoginData:
+    user_id: int
+    challenge_id: str
     expires_at: datetime
 
 
@@ -167,6 +178,44 @@ class SessionManager:
         return SessionData(user_id=user_id, session_id=session_id, expires_at=expires_at)
 
 
+class PendingLoginManager:
+    def __init__(self, secret_key: str, ttl_minutes: int = 10):
+        self.secret_key = secret_key.encode("utf-8")
+        self.ttl = timedelta(minutes=ttl_minutes)
+        self.purpose = "pending-2fa"
+
+    def _sign(self, payload: str) -> str:
+        return hmac.new(self.secret_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def create(self, user_id: int) -> str:
+        expires_at = iso_z(now_utc() + self.ttl)
+        challenge_id = secrets.token_urlsafe(18)
+        payload = f"{self.purpose}|{user_id}|{challenge_id}|{expires_at}"
+        signature = self._sign(payload)
+        return f"{payload}|{signature}"
+
+    def parse(self, token: Optional[str]) -> Optional[PendingLoginData]:
+        if not token:
+            return None
+        try:
+            purpose, user_id_raw, challenge_id, expires_at_raw, signature = token.split("|", 4)
+        except ValueError:
+            return None
+        if purpose != self.purpose:
+            return None
+        payload = f"{purpose}|{user_id_raw}|{challenge_id}|{expires_at_raw}"
+        if not hmac.compare_digest(signature, self._sign(payload)):
+            return None
+        expires_at = parse_utc(expires_at_raw)
+        if not expires_at or expires_at < now_utc():
+            return None
+        try:
+            user_id = int(user_id_raw)
+        except ValueError:
+            return None
+        return PendingLoginData(user_id=user_id, challenge_id=challenge_id, expires_at=expires_at)
+
+
 class CsrfManager:
     def __init__(self, secret_key: str, ttl_hours: int):
         self.secret_key = secret_key.encode("utf-8")
@@ -218,6 +267,11 @@ class SecretBox:
         payload = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return self.prefix + self.fernet.encrypt(payload).decode("utf-8")
 
+    def encrypt_text(self, value: str) -> str:
+        if not value:
+            return ""
+        return self.prefix + self.fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+
     def decrypt_mapping(self, raw: str) -> Dict[str, Any]:
         value = (raw or "").strip()
         if not value:
@@ -234,8 +288,71 @@ class SecretBox:
             raise RuntimeError("decrypted provider settings payload is invalid")
         return decoded
 
+    def decrypt_text(self, raw: str) -> str:
+        value = (raw or "").strip()
+        if not value:
+            return ""
+        if not value.startswith(self.prefix):
+            return value
+        try:
+            return self.fernet.decrypt(value[len(self.prefix) :].encode("utf-8")).decode("utf-8")
+        except (InvalidToken, ValueError) as exc:
+            raise RuntimeError("unable to decrypt secure user settings; check CAL_WEBAPP_DATA_KEY") from exc
+
     def is_encrypted(self, raw: str) -> bool:
         return (raw or "").startswith(self.prefix)
+
+
+class TotpManager:
+    def __init__(self, *, digits: int = 6, period_seconds: int = 30):
+        self.digits = digits
+        self.period_seconds = period_seconds
+
+    def generate_secret(self) -> str:
+        return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+    def provisioning_uri(self, secret: str, account_name: str, issuer: str) -> str:
+        label = quote(f"{issuer}:{account_name}")
+        return (
+            f"otpauth://totp/{label}"
+            f"?secret={quote(secret)}&issuer={quote(issuer)}&digits={self.digits}&period={self.period_seconds}"
+        )
+
+    def generate_code(self, secret: str, at_time: Optional[datetime] = None) -> str:
+        key = self._decode_secret(secret)
+        counter_value = int((at_time or now_utc()).timestamp()) // self.period_seconds
+        counter_bytes = struct.pack(">Q", counter_value)
+        digest = hmac.new(key, counter_bytes, hashlib.sha1).digest()
+        offset = digest[-1] & 0x0F
+        binary = (
+            ((digest[offset] & 0x7F) << 24)
+            | ((digest[offset + 1] & 0xFF) << 16)
+            | ((digest[offset + 2] & 0xFF) << 8)
+            | (digest[offset + 3] & 0xFF)
+        )
+        return str(binary % (10**self.digits)).zfill(self.digits)
+
+    def verify_code(self, secret: str, code: str, at_time: Optional[datetime] = None, window: int = 1) -> bool:
+        normalized_code = "".join(char for char in code if char.isdigit())
+        if len(normalized_code) != self.digits:
+            return False
+        current_time = at_time or now_utc()
+        for offset in range(-window, window + 1):
+            candidate_time = current_time + timedelta(seconds=offset * self.period_seconds)
+            try:
+                candidate = self.generate_code(secret, at_time=candidate_time)
+            except (ValueError, binascii.Error):
+                return False
+            if hmac.compare_digest(candidate, normalized_code):
+                return True
+        return False
+
+    def _decode_secret(self, secret: str) -> bytes:
+        normalized = "".join(str(secret).strip().upper().split())
+        if not normalized:
+            raise ValueError("missing totp secret")
+        padding = "=" * ((8 - len(normalized) % 8) % 8)
+        return base64.b32decode(normalized + padding, casefold=True)
 
 
 def mask_secret(value: str) -> str:

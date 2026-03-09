@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import calendar as monthcalendar
+import io
 import json
 import threading
 from contextlib import asynccontextmanager
@@ -16,15 +18,28 @@ from sync_exchange_icloud_calendar import normalize_calendar_description, normal
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+try:
+    import qrcode
+    from qrcode.image.svg import SvgPathImage
+
+    QRCODE_AVAILABLE = True
+except ModuleNotFoundError:
+    qrcode = None
+    SvgPathImage = None
+    QRCODE_AVAILABLE = False
+
 from .config import AppSettings
 from .database import Database
 from .repository import AppRepository
 from .security import (
     CsrfManager,
+    PendingLoginData,
+    PendingLoginManager,
     PasswordHasher,
     SecretBox,
     SessionData,
     SessionManager,
+    TotpManager,
     iso_z,
     mask_secret,
     now_utc,
@@ -39,6 +54,7 @@ TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 VALID_PROVIDERS = {"google", "exchange", "icloud"}
 CONNECTION_PROFILE_KIND = "aether-calendar-connection-profile"
 CONNECTION_PROFILE_VERSION = 1
+PENDING_LOGIN_COOKIE_NAME = "aether_pending_2fa"
 KNOWN_CONNECTION_SETTING_FIELDS = [
     "timeout_sec",
     "exchange_tenant_id",
@@ -115,7 +131,9 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     repository.reencrypt_legacy_connection_settings()
     passwords = PasswordHasher()
     sessions = SessionManager(settings.app_secret, settings.session_ttl_hours)
+    pending_logins = PendingLoginManager(settings.app_secret, ttl_minutes=10)
     csrf = CsrfManager(settings.app_secret, settings.session_ttl_hours)
+    totp = TotpManager()
     sync_service = SyncService(repository, settings)
     auto_sync_worker = AutoSyncWorker(repository, sync_service, settings) if settings.auto_sync_worker_enabled else None
 
@@ -135,7 +153,9 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     app.state.repository = repository
     app.state.passwords = passwords
     app.state.sessions = sessions
+    app.state.pending_logins = pending_logins
     app.state.csrf = csrf
+    app.state.totp = totp
     app.state.sync_service = sync_service
     app.state.auto_sync_worker = auto_sync_worker
 
@@ -202,6 +222,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             return _redirect("/setup")
         if _current_user(request, repository, sessions, settings):
             return _redirect("/app/dashboard")
+        if _pending_two_factor_user(request, repository, pending_logins):
+            return _redirect("/login/2fa")
         return _render_template(
             request,
             settings,
@@ -232,14 +254,81 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             repository.record_login_attempt(email, client_ip, False)
             return _redirect("/login?error=auth")
 
-        repository.record_login_attempt(email, client_ip, True)
-        repository.clear_login_attempts(email, client_ip)
         if passwords.needs_rehash(str(user["password_hash"])):
             updated = repository.update_user_password(int(user["id"]), passwords.hash_password(password))
             if updated:
                 user = updated
 
+        if bool(user.get("two_factor_enabled")):
+            response = _redirect("/login/2fa")
+            _clear_session_cookie(response, settings)
+            _set_pending_login_cookie(response, settings, pending_logins.create(int(user["id"])))
+            _set_csrf_cookie(response, settings, csrf.issue(None))
+            return response
+
+        repository.record_login_attempt(email, client_ip, True)
+        repository.clear_login_attempts(email, client_ip)
         response = _redirect("/app/dashboard")
+        _clear_pending_login_cookie(response, settings)
+        _set_session_cookie(response, settings, sessions.create(int(user["id"])))
+        _set_csrf_cookie(response, settings, csrf.issue(None))
+        return response
+
+    @app.get("/login/2fa", response_class=HTMLResponse)
+    async def login_two_factor_page(request: Request) -> Any:
+        if repository.count_users() == 0:
+            return _redirect("/setup")
+        if _current_user(request, repository, sessions, settings):
+            return _redirect("/app/dashboard")
+        user = _pending_two_factor_user(request, repository, pending_logins)
+        if not user:
+            response = _redirect("/login?error=two-factor-expired")
+            _clear_pending_login_cookie(response, settings)
+            return response
+        return _render_template(
+            request,
+            settings,
+            csrf,
+            "login_2fa.html",
+            {
+                "title": "Zwei-Faktor-Bestaetigung",
+                "app_name": settings.app_name,
+                "pending_email": str(user["email"]),
+                "error_message": _two_factor_login_error_message(request),
+            },
+        )
+
+    @app.post("/login/2fa")
+    async def login_two_factor_submit(request: Request) -> RedirectResponse:
+        if repository.count_users() == 0:
+            return _redirect("/setup")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/login/2fa?error=security")
+        pending = _current_pending_login(request, pending_logins)
+        if not pending:
+            response = _redirect("/login?error=two-factor-expired")
+            _clear_pending_login_cookie(response, settings)
+            return response
+        user = repository.get_user(pending.user_id)
+        if not user or not bool(user.get("two_factor_enabled")) or not str(user.get("two_factor_secret") or "").strip():
+            response = _redirect("/login?error=two-factor-expired")
+            _clear_pending_login_cookie(response, settings)
+            return response
+
+        client_ip = _client_ip(request)
+        if _login_rate_limited(repository, settings, str(user["email"]), client_ip):
+            return _redirect("/login/2fa?error=rate-limit")
+
+        code = str(form.get("code") or "").strip()
+        if not totp.verify_code(str(user["two_factor_secret"]), code):
+            repository.record_login_attempt(str(user["email"]), client_ip, False)
+            return _redirect("/login/2fa?error=auth")
+
+        repository.record_login_attempt(str(user["email"]), client_ip, True)
+        repository.clear_login_attempts(str(user["email"]), client_ip)
+        response = _redirect("/app/dashboard")
+        _clear_pending_login_cookie(response, settings)
         _set_session_cookie(response, settings, sessions.create(int(user["id"])))
         _set_csrf_cookie(response, settings, csrf.issue(None))
         return response
@@ -487,6 +576,98 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         repository.toggle_connection(int(user["id"]), connection_id)
         return _redirect("/app/connections?notice=updated")
 
+    @app.get("/app/settings", response_class=HTMLResponse)
+    async def settings_view(request: Request) -> Any:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        pending_secret = str(user.get("two_factor_pending_secret") or "").strip()
+        provisioning_uri = (
+            totp.provisioning_uri(pending_secret, str(user["email"]), settings.app_name)
+            if pending_secret
+            else ""
+        )
+        context = _base_context(request, settings, user, "Benutzereinstellungen")
+        context.update(
+            {
+                "page_notice": _page_notice(request),
+                "two_factor_enabled": bool(user.get("two_factor_enabled")),
+                "two_factor_pending": bool(pending_secret),
+                "two_factor_setup_secret": _format_two_factor_secret(pending_secret),
+                "two_factor_setup_uri": provisioning_uri,
+                "two_factor_qr_data_uri": _totp_qr_data_uri(provisioning_uri),
+                "two_factor_account_name": str(user["email"]),
+            }
+        )
+        return _render_template(request, settings, csrf, "settings.html", context)
+
+    @app.post("/app/settings/two-factor/setup")
+    async def begin_two_factor_setup(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/settings?error=security")
+        if bool(user.get("two_factor_enabled")):
+            return _redirect("/app/settings?error=two-factor")
+        repository.begin_user_two_factor_setup(int(user["id"]), totp.generate_secret())
+        return _redirect("/app/settings?notice=two-factor-setup-started")
+
+    @app.post("/app/settings/two-factor/cancel")
+    async def cancel_two_factor_setup(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/settings?error=security")
+        repository.clear_user_two_factor_pending_secret(int(user["id"]))
+        return _redirect("/app/settings?notice=two-factor-setup-cancelled")
+
+    @app.post("/app/settings/two-factor/enable")
+    async def enable_two_factor(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/settings?error=security")
+        current_password = str(form.get("current_password") or "")
+        code = str(form.get("code") or "").strip()
+        pending_secret = str(user.get("two_factor_pending_secret") or "").strip()
+        if (
+            not pending_secret
+            or not passwords.verify_password(current_password, str(user["password_hash"]))
+            or not totp.verify_code(pending_secret, code)
+        ):
+            return _redirect("/app/settings?error=two-factor")
+        repository.enable_user_two_factor(int(user["id"]), pending_secret)
+        return _redirect("/app/settings?notice=two-factor-enabled")
+
+    @app.post("/app/settings/two-factor/disable")
+    async def disable_two_factor(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/settings?error=security")
+        current_password = str(form.get("current_password") or "")
+        code = str(form.get("code") or "").strip()
+        secret = str(user.get("two_factor_secret") or "").strip()
+        if (
+            not bool(user.get("two_factor_enabled"))
+            or not secret
+            or not passwords.verify_password(current_password, str(user["password_hash"]))
+            or not totp.verify_code(secret, code)
+        ):
+            return _redirect("/app/settings?error=two-factor")
+        repository.disable_user_two_factor(int(user["id"]))
+        response = _redirect("/app/settings?notice=two-factor-disabled")
+        _clear_pending_login_cookie(response, settings)
+        return response
+
     @app.post("/app/settings/autosync")
     async def update_auto_sync(request: Request) -> RedirectResponse:
         user = _require_user(request, repository, sessions, settings)
@@ -631,6 +812,19 @@ def _set_session_cookie(response: Response, settings: AppSettings, token: str) -
     )
 
 
+def _set_pending_login_cookie(response: Response, settings: AppSettings, token: str) -> None:
+    response.set_cookie(
+        PENDING_LOGIN_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=settings.secure_cookies,
+        samesite=settings.session_cookie_samesite,
+        max_age=10 * 60,
+        path="/",
+        domain=settings.session_cookie_domain,
+    )
+
+
 def _set_csrf_cookie(response: Response, settings: AppSettings, token: str) -> None:
     response.set_cookie(
         settings.csrf_cookie_name,
@@ -644,7 +838,7 @@ def _set_csrf_cookie(response: Response, settings: AppSettings, token: str) -> N
     )
 
 
-def _clear_auth_cookies(response: Response, settings: AppSettings) -> None:
+def _clear_session_cookie(response: Response, settings: AppSettings) -> None:
     response.delete_cookie(
         settings.session_cookie_name,
         path="/",
@@ -653,6 +847,22 @@ def _clear_auth_cookies(response: Response, settings: AppSettings) -> None:
         httponly=True,
         samesite=settings.session_cookie_samesite,
     )
+
+
+def _clear_pending_login_cookie(response: Response, settings: AppSettings) -> None:
+    response.delete_cookie(
+        PENDING_LOGIN_COOKIE_NAME,
+        path="/",
+        domain=settings.session_cookie_domain,
+        secure=settings.secure_cookies,
+        httponly=True,
+        samesite=settings.session_cookie_samesite,
+    )
+
+
+def _clear_auth_cookies(response: Response, settings: AppSettings) -> None:
+    _clear_session_cookie(response, settings)
+    _clear_pending_login_cookie(response, settings)
     response.delete_cookie(
         settings.csrf_cookie_name,
         path="/",
@@ -676,6 +886,10 @@ def _current_session(request: Request, sessions: SessionManager, settings: AppSe
     return sessions.parse(request.cookies.get(settings.session_cookie_name))
 
 
+def _current_pending_login(request: Request, pending_logins: PendingLoginManager) -> Optional[PendingLoginData]:
+    return pending_logins.parse(request.cookies.get(PENDING_LOGIN_COOKIE_NAME))
+
+
 def _current_user(
     request: Request,
     repository: AppRepository,
@@ -697,6 +911,20 @@ def _require_user(
     if repository.count_users() == 0:
         return None
     return _current_user(request, repository, sessions, settings)
+
+
+def _pending_two_factor_user(
+    request: Request,
+    repository: AppRepository,
+    pending_logins: PendingLoginManager,
+) -> Optional[Dict[str, Any]]:
+    pending = _current_pending_login(request, pending_logins)
+    if not pending:
+        return None
+    user = repository.get_user(pending.user_id)
+    if not user or not bool(user.get("two_factor_enabled")):
+        return None
+    return user
 
 
 def _base_context(request: Request, settings: AppSettings, user: Dict[str, Any], title: str) -> Dict[str, Any]:
@@ -728,6 +956,14 @@ def _page_notice(request: Request) -> Optional[str]:
         return "Aenderung gespeichert."
     if notice == "autosync-updated":
         return "Auto-Sync-Intervall gespeichert."
+    if notice == "two-factor-setup-started":
+        return "Einrichtungsschluessel erzeugt. Bitte in deiner Authenticator-App eintragen und mit Code bestaetigen."
+    if notice == "two-factor-setup-cancelled":
+        return "Die offene Zwei-Faktor-Einrichtung wurde verworfen."
+    if notice == "two-factor-enabled":
+        return "Zwei-Faktor-Authentifizierung wurde aktiviert."
+    if notice == "two-factor-disabled":
+        return "Zwei-Faktor-Authentifizierung wurde deaktiviert."
     if notice == "deleted":
         return "Eintrag geloescht."
     if notice == "updated":
@@ -742,6 +978,8 @@ def _page_notice(request: Request) -> Optional[str]:
         return "Die Eingaben sind ungueltig oder unvollstaendig."
     if error == "profile":
         return "Die Profildatei ist ungueltig oder konnte nicht gelesen werden."
+    if error == "two-factor":
+        return "Die Zwei-Faktor-Aktion konnte nicht bestaetigt werden. Bitte Passwort und Code pruefen."
     return None
 
 
@@ -753,6 +991,19 @@ def _login_error_message(request: Request) -> Optional[str]:
         return "Zu viele fehlgeschlagene Anmeldeversuche. Bitte spaeter erneut versuchen."
     if error == "auth":
         return "Anmeldung fehlgeschlagen."
+    if error == "two-factor-expired":
+        return "Die Zwei-Faktor-Bestaetigung ist abgelaufen. Bitte erneut anmelden."
+    return None
+
+
+def _two_factor_login_error_message(request: Request) -> Optional[str]:
+    error = str(request.query_params.get("error") or "").strip().lower()
+    if error == "security":
+        return "Die Anfrage konnte nicht verifiziert werden. Bitte die Seite neu laden."
+    if error == "rate-limit":
+        return "Zu viele fehlgeschlagene Anmeldeversuche. Bitte spaeter erneut versuchen."
+    if error == "auth":
+        return "Der Zwei-Faktor-Code ist ungueltig."
     return None
 
 
@@ -792,6 +1043,32 @@ def _format_datetime_for_humans(raw: str) -> str:
     if not parsed:
         return raw
     return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _format_two_factor_secret(secret: str) -> str:
+    value = "".join(str(secret).strip().upper().split())
+    if not value:
+        return ""
+    return " ".join(value[index : index + 4] for index in range(0, len(value), 4))
+
+
+def _totp_qr_data_uri(provisioning_uri: str) -> str:
+    if not provisioning_uri or not QRCODE_AVAILABLE or qrcode is None or SvgPathImage is None:
+        return ""
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+        image_factory=SvgPathImage,
+    )
+    qr.add_data(provisioning_uri)
+    qr.make(fit=True)
+    image = qr.make_image()
+    buffer = io.BytesIO()
+    image.save(buffer)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 def _format_time_badge(event: Dict[str, Any]) -> str:

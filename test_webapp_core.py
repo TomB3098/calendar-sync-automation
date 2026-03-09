@@ -9,7 +9,14 @@ from sync_exchange_icloud_calendar import SyncEvent
 from webapp.config import AppSettings
 from webapp.database import Database
 from webapp.repository import AppRepository
-from webapp.security import CRYPTOGRAPHY_AVAILABLE, PasswordHasher, SecretBox, SessionManager, validate_password_policy
+from webapp.security import (
+    CRYPTOGRAPHY_AVAILABLE,
+    PasswordHasher,
+    SecretBox,
+    SessionManager,
+    TotpManager,
+    validate_password_policy,
+)
 from webapp.sync_service import BaseConnectionAdapter, SyncJobLogger, SyncService
 
 try:
@@ -150,6 +157,13 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.user_id, 42)
         self.assertTrue(parsed.session_id)
+
+        totp = TotpManager()
+        secret = totp.generate_secret()
+        code = totp.generate_code(secret, at_time=datetime(2026, 3, 9, 12, 0, tzinfo=UTC))
+        self.assertTrue(totp.verify_code(secret, code, at_time=datetime(2026, 3, 9, 12, 0, 10, tzinfo=UTC)))
+        self.assertFalse(totp.verify_code(secret, "000000", at_time=datetime(2026, 3, 9, 12, 0, 10, tzinfo=UTC)))
+        self.assertIn("otpauth://totp/", totp.provisioning_uri(secret, "owner@example.com", "Test Calendar Console"))
 
     @unittest.skipUnless(CRYPTOGRAPHY_AVAILABLE, "cryptography dependency is not installed")
     def test_repository_encrypts_connection_settings_when_secret_box_is_used(self) -> None:
@@ -1067,6 +1081,122 @@ class WebappCoreTests(unittest.TestCase):
         dashboard_response = client.get("/app/dashboard", follow_redirects=False)
         self.assertEqual(dashboard_response.status_code, 303)
         self.assertEqual(dashboard_response.headers["location"], "/login")
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_user_settings_can_enable_two_factor_login(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-2fa.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        dashboard = client.get("/app/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn("Benutzereinstellungen", dashboard.text)
+
+        start_setup = client.post(
+            "/app/settings/two-factor/setup",
+            data={"_csrf": self.csrf_token(client)},
+            follow_redirects=False,
+        )
+        self.assertEqual(start_setup.status_code, 303)
+        self.assertEqual(start_setup.headers["location"], "/app/settings?notice=two-factor-setup-started")
+
+        setup_page = client.get("/app/settings")
+        self.assertEqual(setup_page.status_code, 200)
+        self.assertIn("QR-Code", setup_page.text)
+        self.assertIn("data:image/svg+xml;base64,", setup_page.text)
+
+        repo = AppRepository(Database(database_path), SecretBox(TEST_DATA_KEY))
+        user = repo.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        pending_secret = str(user["two_factor_pending_secret"])
+        self.assertTrue(pending_secret)
+
+        totp = TotpManager()
+        enable_code = totp.generate_code(pending_secret)
+        enable_response = client.post(
+            "/app/settings/two-factor/enable",
+            data={
+                "_csrf": self.csrf_token(client),
+                "current_password": "very-long-secret-pass",
+                "code": enable_code,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(enable_response.status_code, 303)
+        self.assertEqual(enable_response.headers["location"], "/app/settings?notice=two-factor-enabled")
+
+        user = repo.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        self.assertTrue(user["two_factor_enabled"])
+        self.assertTrue(str(user["two_factor_secret"]))
+        self.assertEqual(str(user["two_factor_pending_secret"]), "")
+
+        logout_response = client.post(
+            "/logout",
+            data={"_csrf": self.csrf_token(client)},
+            follow_redirects=False,
+        )
+        self.assertEqual(logout_response.status_code, 303)
+        self.assertEqual(logout_response.headers["location"], "/login")
+        client.get("/login")
+
+        login_response = client.post(
+            "/login",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(login_response.status_code, 303)
+        self.assertEqual(login_response.headers["location"], "/login/2fa")
+        self.assertIn("aether_pending_2fa", client.cookies)
+
+        bad_code_response = client.post(
+            "/login/2fa",
+            data={
+                "_csrf": self.csrf_token(client),
+                "code": "000000",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(bad_code_response.status_code, 303)
+        self.assertEqual(bad_code_response.headers["location"], "/login/2fa?error=auth")
+
+        current_user = repo.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(current_user)
+        assert current_user is not None
+        login_code = totp.generate_code(str(current_user["two_factor_secret"]))
+        second_factor_response = client.post(
+            "/login/2fa",
+            data={
+                "_csrf": self.csrf_token(client),
+                "code": login_code,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(second_factor_response.status_code, 303)
+        self.assertEqual(second_factor_response.headers["location"], "/app/dashboard")
+        self.assertNotIn("aether_pending_2fa", client.cookies)
+
+        settings_page = client.get("/app/settings")
+        self.assertEqual(settings_page.status_code, 200)
+        self.assertIn("2FA deaktivieren", settings_page.text)
+        self.assertIn("Zwei-Faktor-Authentifizierung", settings_page.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_calendar_month_view_and_logs_show_structured_changes(self) -> None:

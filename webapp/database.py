@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     auto_sync_interval_minutes INTEGER NOT NULL DEFAULT 0,
+    two_factor_enabled INTEGER NOT NULL DEFAULT 0,
+    two_factor_secret TEXT NOT NULL DEFAULT '',
+    two_factor_pending_secret TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 
@@ -151,6 +154,24 @@ class Database:
                 "users",
                 "auto_sync_interval_minutes",
                 "ALTER TABLE users ADD COLUMN auto_sync_interval_minutes INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "users",
+                "two_factor_enabled",
+                "ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "users",
+                "two_factor_secret",
+                "ALTER TABLE users ADD COLUMN two_factor_secret TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                "users",
+                "two_factor_pending_secret",
+                "ALTER TABLE users ADD COLUMN two_factor_pending_secret TEXT NOT NULL DEFAULT ''",
             )
             self._ensure_column(
                 connection,

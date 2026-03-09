@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="brand-kicker">Identity & Access</div>
+    <h2>Benutzereinstellungen</h2>
+    <p>Kontozugriff, Login-Haertung und Zwei-Faktor-Authentifizierung werden hier zentral verwaltet.</p>
+    {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
+  </div>
+</section>
+
+<section class="layout-split">
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Konto</h3>
+    </div>
+    <div class="settings-stack">
+      <div class="settings-row">
+        <span class="meta-line">E-Mail</span>
+        <strong>{{ user.email }}</strong>
+      </div>
+      <div class="settings-row">
+        <span class="meta-line">Login-Schutz</span>
+        <strong>{{ "Zwei Faktoren aktiv" if two_factor_enabled else "Passwortbasiert" }}</strong>
+      </div>
+      <div class="settings-row">
+        <span class="meta-line">Authenticator-Konto</span>
+        <strong>{{ two_factor_account_name }}</strong>
+      </div>
+    </div>
+  </article>
+
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Zwei-Faktor-Authentifizierung</h3>
+      <span class="status-pill">{{ "aktiv" if two_factor_enabled else ("Einrichtung offen" if two_factor_pending else "inaktiv") }}</span>
+    </div>
+
+    {% if two_factor_enabled %}
+    <p class="meta-line">Beim Login wird nach dem Passwort ein zusaetzlicher TOTP-Code aus deiner Authenticator-App abgefragt.</p>
+    <form method="post" action="/app/settings/two-factor/disable" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <label>Aktuelles Passwort
+        <input type="password" name="current_password" autocomplete="current-password" required />
+      </label>
+      <label>Aktueller Zwei-Faktor-Code
+        <input type="text" name="code" inputmode="numeric" pattern="[0-9 ]{6,8}" maxlength="8" placeholder="123456" required />
+      </label>
+      <div class="button-row">
+        <button type="submit" class="danger">2FA deaktivieren</button>
+      </div>
+    </form>
+    {% elif two_factor_pending %}
+    <p class="meta-line">Die Einrichtung ist vorbereitet. Trage den Schluessel in einer TOTP-App ein und bestaetige danach den ersten 6-stelligen Code.</p>
+    {% if two_factor_qr_data_uri %}
+    <div class="qr-panel">
+      <img src="{{ two_factor_qr_data_uri }}" alt="QR-Code fuer die Zwei-Faktor-Einrichtung" class="qr-image" />
+      <p class="meta-line">QR-Code mit deiner Authenticator-App scannen.</p>
+    </div>
+    {% endif %}
+    <div class="secret-block">
+      <span class="brand-kicker">Setup Key</span>
+      <code>{{ two_factor_setup_secret }}</code>
+    </div>
+    <label>Otpauth URI
+      <textarea readonly>{{ two_factor_setup_uri }}</textarea>
+    </label>
+    <form method="post" action="/app/settings/two-factor/enable" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <label>Aktuelles Passwort
+        <input type="password" name="current_password" autocomplete="current-password" required />
+      </label>
+      <label>Code aus der Authenticator-App
+        <input type="text" name="code" inputmode="numeric" pattern="[0-9 ]{6,8}" maxlength="8" placeholder="123456" required />
+      </label>
+      <div class="button-row">
+        <button type="submit">2FA aktivieren</button>
+      </div>
+    </form>
+    <form method="post" action="/app/settings/two-factor/cancel" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button type="submit" class="link-button light-link">Einrichtung verwerfen</button>
+    </form>
+    {% else %}
+    <p class="meta-line">Aktiviere TOTP-basierten Login-Schutz fuer dein Konto. Unterstuetzt werden gaengige Apps wie 1Password, Microsoft Authenticator oder Google Authenticator.</p>
+    <form method="post" action="/app/settings/two-factor/setup" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button type="submit">2FA einrichten</button>
+    </form>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

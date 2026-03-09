@@ -8,6 +8,18 @@ from .database import Database
 from .security import SecretBox, iso_z, now_utc
 
 
+USER_SELECT_FIELDS = """
+    id,
+    email,
+    password_hash,
+    auto_sync_interval_minutes,
+    two_factor_enabled,
+    two_factor_secret,
+    two_factor_pending_secret,
+    created_at
+"""
+
+
 def _row_to_dict(row: Any) -> Dict[str, Any]:
     return dict(row) if row is not None else {}
 
@@ -35,18 +47,18 @@ class AppRepository:
     def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT id, email, password_hash, auto_sync_interval_minutes, created_at FROM users WHERE id = ?",
+                f"SELECT {USER_SELECT_FIELDS} FROM users WHERE id = ?",
                 (user_id,),
             ).fetchone()
-        return _row_to_dict(row) if row else None
+        return self._user_row(row) if row else None
 
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT id, email, password_hash, auto_sync_interval_minutes, created_at FROM users WHERE email = ?",
+                f"SELECT {USER_SELECT_FIELDS} FROM users WHERE email = ?",
                 (email.strip().lower(),),
             ).fetchone()
-        return _row_to_dict(row) if row else None
+        return self._user_row(row) if row else None
 
     def update_user_password(self, user_id: int, password_hash: str) -> Optional[Dict[str, Any]]:
         with self.database.connect() as connection:
@@ -64,17 +76,69 @@ class AppRepository:
             )
         return self.get_user(user_id)
 
+    def begin_user_two_factor_setup(self, user_id: int, pending_secret: str) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE users SET two_factor_pending_secret = ? WHERE id = ?",
+                (self._encode_user_secret(pending_secret), user_id),
+            )
+        return self.get_user(user_id)
+
+    def clear_user_two_factor_pending_secret(self, user_id: int) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE users SET two_factor_pending_secret = '' WHERE id = ?",
+                (user_id,),
+            )
+        return self.get_user(user_id)
+
+    def enable_user_two_factor(self, user_id: int, secret: str) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE users
+                SET two_factor_enabled = 1,
+                    two_factor_secret = ?,
+                    two_factor_pending_secret = ''
+                WHERE id = ?
+                """,
+                (self._encode_user_secret(secret), user_id),
+            )
+        return self.get_user(user_id)
+
+    def disable_user_two_factor(self, user_id: int) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE users
+                SET two_factor_enabled = 0,
+                    two_factor_secret = '',
+                    two_factor_pending_secret = ''
+                WHERE id = ?
+                """,
+                (user_id,),
+            )
+        return self.get_user(user_id)
+
     def list_users_with_auto_sync(self) -> List[Dict[str, Any]]:
         with self.database.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, email, password_hash, auto_sync_interval_minutes, created_at
+                SELECT
+                    id,
+                    email,
+                    password_hash,
+                    auto_sync_interval_minutes,
+                    two_factor_enabled,
+                    two_factor_secret,
+                    two_factor_pending_secret,
+                    created_at
                 FROM users
                 WHERE auto_sync_interval_minutes > 0
                 ORDER BY id ASC
                 """
             ).fetchall()
-        return [_row_to_dict(row) for row in rows]
+        return [self._user_row(row) for row in rows]
 
     def get_latest_sync_job_for_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         with self.database.connect() as connection:
@@ -633,6 +697,15 @@ class AppRepository:
         data["is_all_day"] = bool(data["is_all_day"])
         return data
 
+    def _user_row(self, row: Any) -> Dict[str, Any]:
+        data = _row_to_dict(row)
+        if not data:
+            return data
+        data["two_factor_enabled"] = bool(data.get("two_factor_enabled"))
+        data["two_factor_secret"] = self._decode_user_secret(str(data.get("two_factor_secret") or ""))
+        data["two_factor_pending_secret"] = self._decode_user_secret(str(data.get("two_factor_pending_secret") or ""))
+        return data
+
     def _connection_row(self, row: Any) -> Dict[str, Any]:
         data = _row_to_dict(row)
         if not data:
@@ -668,3 +741,20 @@ class AppRepository:
             raise RuntimeError("encrypted provider settings require CAL_WEBAPP_DATA_KEY")
         decoded = json.loads(value or "{}")
         return decoded if isinstance(decoded, dict) else {}
+
+    def _encode_user_secret(self, value: str) -> str:
+        if not value:
+            return ""
+        if self.secret_box:
+            return self.secret_box.encrypt_text(value)
+        return value
+
+    def _decode_user_secret(self, raw: str) -> str:
+        value = (raw or "").strip()
+        if not value:
+            return ""
+        if self.secret_box:
+            return self.secret_box.decrypt_text(value)
+        if value.startswith(SecretBox.prefix):
+            raise RuntimeError("encrypted user settings require CAL_WEBAPP_DATA_KEY")
+        return value
