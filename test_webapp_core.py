@@ -976,7 +976,7 @@ class WebappCoreTests(unittest.TestCase):
         response = client.get("/app/dashboard")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Interner Hauptkalender", response.text)
-        self.assertEqual(response.headers.get("content-security-policy"), "default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+        self.assertEqual(response.headers.get("content-security-policy"), "default-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 
         response = client.post(
             "/app/events",
@@ -1093,6 +1093,90 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("Titel", response.text)
         self.assertIn("Alt", response.text)
         self.assertIn("Neu", response.text)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_connection_profiles_can_export_and_import(self) -> None:
+        source_db = Path(tempfile.mkdtemp()) / "http-profile-source.sqlite3"
+        source_settings = self.make_settings(database_path=source_db, auto_sync_worker_enabled=False)
+        source_client = TestClient(create_app(source_settings))
+
+        source_client.get("/setup")
+        source_client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(source_client),
+                "email": "source@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+        create_response = source_client.post(
+            "/app/connections",
+            data={
+                "_csrf": self.csrf_token(source_client),
+                "provider": "exchange",
+                "display_name": "Work Exchange",
+                "blocked_title": "Blocked",
+                "timeout_sec": "45",
+                "exchange_tenant_id": "tenant-id",
+                "exchange_client_id": "client-id",
+                "exchange_client_secret": "secret-value",
+                "exchange_user": "info@example.com",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(create_response.status_code, 303)
+
+        export_response = source_client.get("/app/connections/export")
+        self.assertEqual(export_response.status_code, 200)
+        self.assertEqual(export_response.headers["content-type"].split(";")[0], "application/json")
+        self.assertIn("attachment; filename=", export_response.headers["content-disposition"])
+        exported_payload = export_response.json()
+        self.assertEqual(exported_payload["kind"], "aether-calendar-connection-profile")
+        self.assertEqual(len(exported_payload["connections"]), 1)
+        self.assertEqual(exported_payload["connections"][0]["settings"]["exchange_user"], "info@example.com")
+
+        target_db = Path(tempfile.mkdtemp()) / "http-profile-target.sqlite3"
+        target_settings = self.make_settings(database_path=target_db, auto_sync_worker_enabled=False)
+        target_client = TestClient(create_app(target_settings))
+
+        target_client.get("/setup")
+        target_client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(target_client),
+                "email": "target@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+        import_response = target_client.post(
+            "/app/connections/import",
+            data={"_csrf": self.csrf_token(target_client)},
+            files={"profile_file": ("connections.json", export_response.content, "application/json")},
+            follow_redirects=False,
+        )
+        self.assertEqual(import_response.status_code, 303)
+        self.assertEqual(import_response.headers["location"], "/app/connections?notice=profile-imported&created=1&updated=0")
+
+        target_repo = AppRepository(Database(target_db), SecretBox(TEST_DATA_KEY))
+        target_user = target_repo.get_user_by_email("target@example.com")
+        self.assertIsNotNone(target_user)
+        assert target_user is not None
+        connections = target_repo.list_connections(int(target_user["id"]))
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(connections[0]["display_name"], "Work Exchange")
+        self.assertEqual(connections[0]["settings"]["exchange_user"], "info@example.com")
+        self.assertEqual(connections[0]["settings"]["timeout_sec"], "45")
+
+        second_import = target_client.post(
+            "/app/connections/import",
+            data={"_csrf": self.csrf_token(target_client)},
+            files={"profile_file": ("connections.json", export_response.content, "application/json")},
+            follow_redirects=False,
+        )
+        self.assertEqual(second_import.status_code, 303)
+        self.assertEqual(second_import.headers["location"], "/app/connections?notice=profile-imported&created=0&updated=1")
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_requires_csrf_and_rate_limits_login(self) -> None:

@@ -7,9 +7,26 @@
     <p>Google, Exchange und iCloud koennen als aktive Sync-Ziele oder Import-Quellen hinterlegt werden.</p>
     {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
   </div>
+  <div class="button-row">
+    <a class="ghost-link" href="/app/connections/export">Alle Profile exportieren</a>
+  </div>
 </section>
 
 <section class="layout-split">
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Profil importieren</h3>
+    </div>
+    <form method="post" action="/app/connections/import" class="stack" enctype="multipart/form-data">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <label>Profil-Datei
+        <input type="file" name="profile_file" accept=".json,application/json" required />
+      </label>
+      <p class="meta-line">Importiert JSON-Profile mit einer oder mehreren Verknuepfungen. Bestehende Verknuepfungen mit gleichem Provider und Anzeigenamen werden aktualisiert.</p>
+      <button type="submit">Profil hochladen</button>
+    </form>
+  </article>
+
   <article class="panel">
     <div class="panel-head">
       <h3>Neue Verbindung</h3>
@@ -51,31 +68,34 @@
       <button type="submit">Verbindung speichern</button>
     </form>
   </article>
+</section>
 
-  <article class="panel">
-    <div class="panel-head">
-      <h3>Aktuelle Verbindungen</h3>
-    </div>
-    <div class="connection-list">
-      {% for connection in connections %}
-      <article class="connection-card">
-        <header>
-          <div>
-            <strong>{{ connection.display_name }}</strong>
-            <div class="meta-line">{{ connection.provider }} · {{ connection.policy_label }}</div>
-          </div>
-          <span class="status-pill">{{ "aktiv" if connection.is_active else "pausiert" }}</span>
-        </header>
-        <pre>{{ connection.settings_pretty }}</pre>
+<section class="panel">
+  <div class="panel-head">
+    <h3>Aktuelle Verbindungen</h3>
+  </div>
+  <div class="connection-list">
+    {% for connection in connections %}
+    <article class="connection-card">
+      <header>
+        <div>
+          <strong>{{ connection.display_name }}</strong>
+          <div class="meta-line">{{ connection.provider }} · {{ connection.policy_label }}</div>
+        </div>
+        <span class="status-pill">{{ "aktiv" if connection.is_active else "pausiert" }}</span>
+      </header>
+      <pre>{{ connection.settings_pretty }}</pre>
+      <div class="button-row">
+        <a class="ghost-link" href="/app/connections/{{ connection.id }}/export">Profil exportieren</a>
         <form method="post" action="/app/connections/{{ connection.id }}/toggle">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <button type="submit">{{ "Pausieren" if connection.is_active else "Aktivieren" }}</button>
         </form>
-      </article>
-      {% else %}
-      <p>Keine Verbindungen vorhanden.</p>
-      {% endfor %}
-    </div>
-  </article>
+      </div>
+    </article>
+    {% else %}
+    <p>Keine Verbindungen vorhanden.</p>
+    {% endfor %}
+  </div>
 </section>
 {% endblock %}

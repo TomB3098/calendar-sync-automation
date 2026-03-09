@@ -271,6 +271,20 @@ class AppRepository:
             ).fetchone()
         return self._connection_row(row) if row else None
 
+    def find_connection_by_provider_and_name(self, user_id: int, provider: str, display_name: str) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM calendar_connections
+                WHERE user_id = ? AND provider = ? AND display_name = ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (user_id, provider.strip().lower(), display_name.strip()),
+            ).fetchone()
+        return self._connection_row(row) if row else None
+
     def create_connection(
         self,
         user_id: int,
@@ -303,6 +317,46 @@ class AppRepository:
             )
             connection_id = int(cursor.lastrowid)
         return self.get_connection(user_id, connection_id) or {}
+
+    def update_connection(
+        self,
+        user_id: int,
+        connection_id: int,
+        *,
+        display_name: str,
+        sync_mode: str,
+        blocked_title: str,
+        settings: Dict[str, Any],
+        is_active: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
+        updates = [
+            "display_name = ?",
+            "sync_mode = ?",
+            "blocked_title = ?",
+            "settings_json = ?",
+            "updated_at = ?",
+        ]
+        params: List[Any] = [
+            display_name.strip(),
+            sync_mode.strip(),
+            blocked_title.strip() or "Blocked",
+            self._encode_settings(settings),
+            iso_z(now_utc()),
+        ]
+        if is_active is not None:
+            updates.insert(3, "is_active = ?")
+            params.insert(3, 1 if is_active else 0)
+        params.extend([user_id, connection_id])
+        with self.database.connect() as connection:
+            connection.execute(
+                f"""
+                UPDATE calendar_connections
+                SET {', '.join(updates)}
+                WHERE user_id = ? AND id = ?
+                """,
+                params,
+            )
+        return self.get_connection(user_id, connection_id)
 
     def reencrypt_legacy_connection_settings(self) -> int:
         if not self.secret_box:

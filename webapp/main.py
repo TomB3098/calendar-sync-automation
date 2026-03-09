@@ -37,6 +37,25 @@ from .sync_service import SOURCE_WEBAPP, SyncService
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 VALID_PROVIDERS = {"google", "exchange", "icloud"}
+CONNECTION_PROFILE_KIND = "aether-calendar-connection-profile"
+CONNECTION_PROFILE_VERSION = 1
+KNOWN_CONNECTION_SETTING_FIELDS = [
+    "timeout_sec",
+    "exchange_tenant_id",
+    "exchange_client_id",
+    "exchange_client_secret",
+    "exchange_user",
+    "icloud_user",
+    "icloud_app_pw",
+    "icloud_principal_path",
+    "icloud_target_calendar_display",
+    "google_calendar_id",
+    "google_oauth_client_id",
+    "google_oauth_client_secret",
+    "google_oauth_refresh_token",
+    "google_service_account_json",
+    "google_impersonate_user",
+]
 
 
 class AutoSyncWorker:
@@ -368,6 +387,95 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         )
         return _redirect("/app/connections?notice=saved")
 
+    @app.post("/app/connections/import")
+    async def import_connections(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/connections?error=security")
+        upload = form.get("profile_file")
+        if upload is None or not hasattr(upload, "read"):
+            return _redirect("/app/connections?error=validation")
+        try:
+            raw_bytes = await upload.read()
+            profile = _parse_connection_profile(raw_bytes.decode("utf-8"))
+        except Exception:
+            return _redirect("/app/connections?error=profile")
+        finally:
+            close_upload = getattr(upload, "close", None)
+            if callable(close_upload):
+                await close_upload()
+
+        created_count = 0
+        updated_count = 0
+        for entry in profile["connections"]:
+            existing = repository.find_connection_by_provider_and_name(
+                int(user["id"]),
+                str(entry["provider"]),
+                str(entry["display_name"]),
+            )
+            sync_mode = str(entry.get("sync_mode") or _default_sync_mode_for_provider(str(entry["provider"])))
+            if existing:
+                repository.update_connection(
+                    int(user["id"]),
+                    int(existing["id"]),
+                    display_name=str(entry["display_name"]),
+                    sync_mode=sync_mode,
+                    blocked_title=str(entry.get("blocked_title") or "Blocked"),
+                    settings=dict(entry.get("settings") or {}),
+                    is_active=bool(entry.get("is_active", True)),
+                )
+                updated_count += 1
+            else:
+                repository.create_connection(
+                    int(user["id"]),
+                    provider=str(entry["provider"]),
+                    display_name=str(entry["display_name"]),
+                    sync_mode=sync_mode,
+                    blocked_title=str(entry.get("blocked_title") or "Blocked"),
+                    settings=dict(entry.get("settings") or {}),
+                )
+                if not bool(entry.get("is_active", True)):
+                    created = repository.find_connection_by_provider_and_name(
+                        int(user["id"]),
+                        str(entry["provider"]),
+                        str(entry["display_name"]),
+                    )
+                    if created:
+                        repository.update_connection(
+                            int(user["id"]),
+                            int(created["id"]),
+                            display_name=str(entry["display_name"]),
+                            sync_mode=sync_mode,
+                            blocked_title=str(entry.get("blocked_title") or "Blocked"),
+                            settings=dict(entry.get("settings") or {}),
+                            is_active=False,
+                        )
+                created_count += 1
+        return _redirect(f"/app/connections?notice=profile-imported&created={created_count}&updated={updated_count}")
+
+    @app.get("/app/connections/export")
+    async def export_all_connections(request: Request) -> Response:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        payload = _build_connection_profile_payload(repository.list_connections(int(user["id"])))
+        return _json_download("aether-connections-profile.json", payload)
+
+    @app.get("/app/connections/{connection_id}/export")
+    async def export_connection(request: Request, connection_id: int) -> Response:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        connection = repository.get_connection(int(user["id"]), connection_id)
+        if not connection:
+            return _redirect("/app/connections?error=validation")
+        payload = _build_connection_profile_payload([connection])
+        filename = f"aether-connection-{connection_id}.json"
+        return _json_download(filename, payload)
+
     @app.post("/app/connections/{connection_id}/toggle")
     async def toggle_connection(request: Request, connection_id: int) -> RedirectResponse:
         user = _require_user(request, repository, sessions, settings)
@@ -465,11 +573,11 @@ def _validate_security_settings(settings: AppSettings) -> None:
 def _apply_security_headers(response: Response, request: Request, settings: AppSettings) -> None:
     csp_parts = [
         "default-src 'self'",
-        "style-src 'self'",
+        "style-src 'self' https://fonts.googleapis.com",
         "img-src 'self' data:",
         "script-src 'self'",
         "connect-src 'self'",
-        "font-src 'self'",
+        "font-src 'self' https://fonts.gstatic.com data:",
         "object-src 'none'",
         "base-uri 'self'",
         "form-action 'self'",
@@ -610,10 +718,16 @@ def _page_notice(request: Request) -> Optional[str]:
         return "Eintrag geloescht."
     if notice == "updated":
         return "Status aktualisiert."
+    if notice == "profile-imported":
+        created = str(request.query_params.get("created") or "0")
+        updated = str(request.query_params.get("updated") or "0")
+        return f"Profil importiert. Neu: {created}, aktualisiert: {updated}."
     if error == "security":
         return "Die Anfrage wurde aus Sicherheitsgruenden abgelehnt."
     if error == "validation":
         return "Die Eingaben sind ungueltig oder unvollstaendig."
+    if error == "profile":
+        return "Die Profildatei ist ungueltig oder konnte nicht gelesen werden."
     return None
 
 
@@ -893,29 +1007,89 @@ def _connection_for_template(connection: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_connection_settings(form: Any) -> Dict[str, Any]:
-    known_fields = [
-        "timeout_sec",
-        "exchange_tenant_id",
-        "exchange_client_id",
-        "exchange_client_secret",
-        "exchange_user",
-        "icloud_user",
-        "icloud_app_pw",
-        "icloud_principal_path",
-        "icloud_target_calendar_display",
-        "google_calendar_id",
-        "google_oauth_client_id",
-        "google_oauth_client_secret",
-        "google_oauth_refresh_token",
-        "google_service_account_json",
-        "google_impersonate_user",
-    ]
+    known_fields = KNOWN_CONNECTION_SETTING_FIELDS
     settings: Dict[str, Any] = {}
     for field in known_fields:
         value = str(form.get(field) or "").strip()
         if value:
             settings[field] = value
     return settings
+
+
+def _filter_connection_settings(raw_settings: Dict[str, Any]) -> Dict[str, Any]:
+    settings: Dict[str, Any] = {}
+    for field in KNOWN_CONNECTION_SETTING_FIELDS:
+        value = raw_settings.get(field)
+        if value is None:
+            continue
+        rendered = str(value).strip()
+        if rendered:
+            settings[field] = rendered
+    return settings
+
+
+def _build_connection_profile_payload(connections: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "kind": CONNECTION_PROFILE_KIND,
+        "version": CONNECTION_PROFILE_VERSION,
+        "exported_at": iso_z(now_utc()),
+        "connections": [
+            {
+                "provider": str(connection["provider"]),
+                "display_name": str(connection["display_name"]),
+                "sync_mode": str(connection.get("sync_mode") or _default_sync_mode_for_provider(str(connection["provider"]))),
+                "blocked_title": str(connection.get("blocked_title") or "Blocked"),
+                "is_active": bool(connection.get("is_active")),
+                "settings": dict(connection.get("settings") or {}),
+            }
+            for connection in connections
+        ],
+    }
+
+
+def _parse_connection_profile(raw_text: str) -> Dict[str, Any]:
+    payload = json.loads(raw_text)
+    if not isinstance(payload, dict):
+        raise ValueError("profile payload must be an object")
+    if str(payload.get("kind") or "").strip() != CONNECTION_PROFILE_KIND:
+        raise ValueError("profile kind is invalid")
+    if int(payload.get("version") or 0) != CONNECTION_PROFILE_VERSION:
+        raise ValueError("profile version is invalid")
+    connections = payload.get("connections")
+    if not isinstance(connections, list) or not connections:
+        raise ValueError("connections must be a non-empty list")
+
+    normalized_connections: List[Dict[str, Any]] = []
+    for item in connections:
+        if not isinstance(item, dict):
+            raise ValueError("connection entry must be an object")
+        provider = str(item.get("provider") or "").strip().lower()
+        display_name = str(item.get("display_name") or "").strip()
+        blocked_title = str(item.get("blocked_title") or "Blocked").strip() or "Blocked"
+        sync_mode = str(item.get("sync_mode") or _default_sync_mode_for_provider(provider)).strip().lower()
+        raw_settings = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+        settings = _filter_connection_settings(dict(raw_settings))
+        if provider not in VALID_PROVIDERS or not display_name:
+            raise ValueError("connection entry is invalid")
+        if sync_mode not in {"full", "blocked"}:
+            sync_mode = _default_sync_mode_for_provider(provider)
+        normalized_connections.append(
+            {
+                "provider": provider,
+                "display_name": display_name,
+                "sync_mode": sync_mode,
+                "blocked_title": blocked_title,
+                "is_active": bool(item.get("is_active", True)),
+                "settings": settings,
+            }
+        )
+    return {"connections": normalized_connections}
+
+
+def _json_download(filename: str, payload: Dict[str, Any]) -> Response:
+    response = Response(json.dumps(payload, ensure_ascii=False, indent=2), media_type="application/json")
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 
 def _default_sync_mode_for_provider(provider: str) -> str:
