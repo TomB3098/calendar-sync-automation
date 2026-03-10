@@ -548,16 +548,27 @@ class SyncService:
 
                 if not event:
                     continue
-                if event.get("origin_connection_id") == connection["id"]:
+                if self._should_delete_internal_event_for_missing_link(event, link, connection):
                     before_snapshot = _snapshot_internal_event(event)
                     self.repository.soft_delete_internal_event(user_id, int(event["id"]))
                     logger.action(
                         "webapp",
                         "deleted",
                         event["sync_id"],
-                        "source-provider-missing",
+                        "provider-delete-propagated",
                         before=before_snapshot,
                         after=None,
+                        payload={
+                            "missing_provider": connection["provider"],
+                            "connection_id": connection["id"],
+                        },
+                    )
+                else:
+                    logger.action(
+                        connection["provider"],
+                        "skipped",
+                        link["sync_id"],
+                        "missing-provider-preserved-newer-change",
                     )
             except Exception as exc:
                 logger.error(
@@ -751,6 +762,34 @@ class SyncService:
         if not starts_at or not ends_at:
             return True
         return ends_at >= start and starts_at <= end
+
+    def _should_delete_internal_event_for_missing_link(
+        self,
+        event: Dict[str, Any],
+        link: Dict[str, Any],
+        connection: Dict[str, Any],
+    ) -> bool:
+        if event.get("deleted_at"):
+            return False
+
+        missing_connection_id = int(connection["id"])
+        if int(event.get("source_connection_id") or 0) == missing_connection_id:
+            return True
+        if int(event.get("origin_connection_id") or 0) == missing_connection_id:
+            return True
+
+        event_updated = parse_any_datetime(event.get("updated_at"))
+        reference_time = self._missing_link_reference_time(link)
+        if not event_updated or not reference_time:
+            return True
+        return event_updated <= reference_time
+
+    def _missing_link_reference_time(self, link: Dict[str, Any]) -> Optional[datetime]:
+        last_seen = parse_any_datetime(link.get("last_seen_at"))
+        last_synced = parse_any_datetime(link.get("last_synced_at"))
+        if last_seen and last_synced:
+            return max(last_seen, last_synced)
+        return last_seen or last_synced
 
     def _placeholder_remote_event(self, provider: str, link: Dict[str, Any]) -> SyncEvent:
         payload = link.get("provider_payload") or {}

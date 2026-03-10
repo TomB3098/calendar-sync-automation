@@ -332,6 +332,232 @@ class WebappCoreTests(unittest.TestCase):
         self.assertEqual(icloud_adapter.deleted_provider_ids, ["icloud-1"])
         self.assertEqual(exchange_adapter.deleted_provider_ids, [])
 
+    def test_sync_service_propagates_delete_when_mirror_provider_event_is_removed(self) -> None:
+        settings = self.make_settings()
+        starts_at, ends_at = self.in_window_times()
+        user = self.repository.create_user("mirror-delete@example.com", "hash")
+        exchange_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="exchange",
+            display_name="Work Exchange",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "exchange_tenant_id": "tenant",
+                "exchange_client_id": "client",
+                "exchange_client_secret": "secret",
+                "exchange_user": "mirror-delete@example.com",
+            },
+        )
+        icloud_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="icloud",
+            display_name="Private iCloud",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "icloud_user": "me@example.com",
+                "icloud_app_pw": "app-password",
+                "icloud_principal_path": "/dav/principal/",
+            },
+        )
+        event = self.repository.create_internal_event(
+            int(user["id"]),
+            title="Mirror Delete",
+            starts_at=starts_at,
+            ends_at=ends_at,
+            source_provider="exchange",
+            source_connection_id=int(exchange_connection["id"]),
+            origin_provider="exchange",
+            origin_connection_id=int(exchange_connection["id"]),
+            sync_id="sync-mirror-delete-1",
+        )
+        self.repository.upsert_event_link(
+            int(user["id"]),
+            int(event["id"]),
+            int(exchange_connection["id"]),
+            external_event_id="exchange-1",
+            sync_id="sync-mirror-delete-1",
+            source="exchange",
+            mode="full",
+            fingerprint="fp-exchange",
+            last_seen_at=starts_at,
+            last_synced_at=starts_at,
+            provider_payload={"id": "exchange-1"},
+        )
+        self.repository.upsert_event_link(
+            int(user["id"]),
+            int(event["id"]),
+            int(icloud_connection["id"]),
+            external_event_id="icloud-1",
+            sync_id="sync-mirror-delete-1",
+            source="webapp",
+            mode="full",
+            fingerprint="fp-icloud",
+            last_seen_at=starts_at,
+            last_synced_at=starts_at,
+            provider_payload={"href": "/calendars/icloud-1.ics"},
+        )
+
+        remote_modified = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+        exchange_remote = SyncEvent(
+            provider="exchange",
+            provider_id="exchange-1",
+            title="Mirror Delete",
+            description="",
+            location="",
+            start={"all_day": False, "dateTime": starts_at},
+            end={"all_day": False, "dateTime": ends_at},
+            sync_id="sync-mirror-delete-1",
+            source="exchange",
+            mode="full",
+            modified_at=remote_modified,
+            raw={"id": "exchange-1"},
+        )
+
+        exchange_adapter = FakeConnectionAdapter(exchange_connection, object(), [exchange_remote])
+        icloud_adapter = FakeConnectionAdapter(icloud_connection, object(), [])
+        service = FakeSyncService(
+            self.repository,
+            settings,
+            {
+                int(exchange_connection["id"]): exchange_adapter,
+                int(icloud_connection["id"]): icloud_adapter,
+            },
+        )
+
+        job = self.repository.create_sync_job(int(user["id"]), "test", "Mirror delete propagation test")
+        logger = SyncJobLogger(self.repository, int(job["id"]))
+        service._run_user_sync(int(user["id"]), logger)
+
+        deleted_event = self.repository.get_internal_event(int(user["id"]), int(event["id"]))
+        self.assertIsNotNone(deleted_event)
+        self.assertIsNotNone(deleted_event["deleted_at"])
+        self.assertEqual(exchange_adapter.deleted_provider_ids, ["exchange-1"])
+        self.assertEqual(icloud_adapter.deleted_provider_ids, [])
+
+    def test_sync_service_preserves_event_when_missing_provider_is_older_than_newer_change(self) -> None:
+        settings = self.make_settings()
+        starts_at, ends_at = self.in_window_times()
+        user = self.repository.create_user("preserve-missing@example.com", "hash")
+        exchange_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="exchange",
+            display_name="Work Exchange",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "exchange_tenant_id": "tenant",
+                "exchange_client_id": "client",
+                "exchange_client_secret": "secret",
+                "exchange_user": "preserve-missing@example.com",
+            },
+        )
+        icloud_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="icloud",
+            display_name="Private iCloud",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "icloud_user": "me@example.com",
+                "icloud_app_pw": "app-password",
+                "icloud_principal_path": "/dav/principal/",
+            },
+        )
+        event = self.repository.create_internal_event(
+            int(user["id"]),
+            title="Preserve Missing Mirror",
+            starts_at=starts_at,
+            ends_at=ends_at,
+            source_provider="exchange",
+            source_connection_id=int(exchange_connection["id"]),
+            origin_provider="exchange",
+            origin_connection_id=int(exchange_connection["id"]),
+            sync_id="sync-preserve-missing-1",
+        )
+        self.repository.upsert_event_link(
+            int(user["id"]),
+            int(event["id"]),
+            int(exchange_connection["id"]),
+            external_event_id="exchange-1",
+            sync_id="sync-preserve-missing-1",
+            source="exchange",
+            mode="full",
+            fingerprint="fp-exchange",
+            last_seen_at=starts_at,
+            last_synced_at=starts_at,
+            provider_payload={"id": "exchange-1"},
+        )
+        self.repository.upsert_event_link(
+            int(user["id"]),
+            int(event["id"]),
+            int(icloud_connection["id"]),
+            external_event_id="icloud-1",
+            sync_id="sync-preserve-missing-1",
+            source="webapp",
+            mode="full",
+            fingerprint="fp-icloud",
+            last_seen_at=starts_at,
+            last_synced_at=starts_at,
+            provider_payload={"href": "/calendars/icloud-1.ics"},
+        )
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE internal_events SET updated_at = ? WHERE id = ?",
+                (ends_at, int(event["id"])),
+            )
+
+        remote_modified = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+        exchange_remote = SyncEvent(
+            provider="exchange",
+            provider_id="exchange-1",
+            title="Preserve Missing Mirror",
+            description="",
+            location="",
+            start={"all_day": False, "dateTime": starts_at},
+            end={"all_day": False, "dateTime": ends_at},
+            sync_id="sync-preserve-missing-1",
+            source="exchange",
+            mode="full",
+            modified_at=remote_modified,
+            raw={"id": "exchange-1"},
+        )
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE event_links
+                SET fingerprint = ?
+                WHERE connection_id = ? AND external_event_id = ?
+                """,
+                (
+                    exchange_remote.fingerprint("full", "Blocked"),
+                    int(exchange_connection["id"]),
+                    "exchange-1",
+                ),
+            )
+
+        exchange_adapter = FakeConnectionAdapter(exchange_connection, object(), [exchange_remote])
+        icloud_adapter = FakeConnectionAdapter(icloud_connection, object(), [])
+        service = FakeSyncService(
+            self.repository,
+            settings,
+            {
+                int(exchange_connection["id"]): exchange_adapter,
+                int(icloud_connection["id"]): icloud_adapter,
+            },
+        )
+
+        job = self.repository.create_sync_job(int(user["id"]), "test", "Preserve newer change test")
+        logger = SyncJobLogger(self.repository, int(job["id"]))
+        service._run_user_sync(int(user["id"]), logger)
+
+        preserved_event = self.repository.get_internal_event(int(user["id"]), int(event["id"]))
+        self.assertIsNotNone(preserved_event)
+        self.assertIsNone(preserved_event["deleted_at"])
+        self.assertEqual(exchange_adapter.deleted_provider_ids, [])
+        self.assertEqual(len(icloud_adapter.upsert_calls), 1)
+
     def test_sync_service_keeps_empty_external_uid_when_remote_event_has_no_uid(self) -> None:
         settings = self.make_settings()
         user = self.repository.create_user("uidless@example.com", "hash")

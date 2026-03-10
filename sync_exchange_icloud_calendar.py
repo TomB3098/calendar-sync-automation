@@ -35,7 +35,7 @@ from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 from zoneinfo import ZoneInfo
 
 import requests
@@ -982,8 +982,58 @@ class ExchangeClient:
             "mode": values.get(GRAPH_PROP_MODE, ""),
         }
 
-    def list_events(self, start: datetime, end: datetime, log: Logger) -> List[SyncEvent]:
-        url = f"https://graph.microsoft.com/v1.0/users/{self.cfg.exchange_user}/calendarView"
+    def _list_syncable_calendars(self, log: Logger) -> List[Dict[str, str]]:
+        url = f"https://graph.microsoft.com/v1.0/users/{self.cfg.exchange_user}/calendars"
+        params = {"$top": 200, "$select": "id,name,canEdit,isDefaultCalendar"}
+        calendars: List[Dict[str, str]] = []
+        next_url: Optional[str] = url
+        next_params: Optional[Dict[str, Any]] = params
+
+        while next_url:
+            response = requests.get(
+                next_url,
+                headers=self._headers(prefer_utc=True),
+                params=next_params,
+                timeout=self.cfg.timeout_sec,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            for item in payload.get("value", []) or []:
+                calendar_id = str(item.get("id", "") or "")
+                if not calendar_id:
+                    continue
+                can_edit = bool(item.get("canEdit"))
+                is_default = bool(item.get("isDefaultCalendar"))
+                if not (can_edit or is_default):
+                    continue
+                calendars.append(
+                    {
+                        "id": calendar_id,
+                        "name": str(item.get("name", "") or "Kalender"),
+                    }
+                )
+            next_url = payload.get("@odata.nextLink")
+            next_params = None
+
+        if calendars:
+            log.info(
+                "exchange_calendars_loaded",
+                count=len(calendars),
+                calendars=" | ".join(calendar["name"] for calendar in calendars),
+            )
+        else:
+            log.warn("exchange_calendar_list_empty")
+        return calendars
+
+    def _calendar_view_events(
+        self,
+        calendar_id: str,
+        calendar_name: str,
+        start: datetime,
+        end: datetime,
+        log: Logger,
+    ) -> List[SyncEvent]:
+        url = f"https://graph.microsoft.com/v1.0/users/{self.cfg.exchange_user}/calendars/{quote(calendar_id, safe='')}/calendarView"
         params = {
             "startDateTime": iso_z(start),
             "endDateTime": iso_z(end),
@@ -1000,14 +1050,14 @@ class ExchangeClient:
         next_url: Optional[str] = url
         next_params: Optional[Dict[str, Any]] = params
         while next_url:
-            r = requests.get(
+            response = requests.get(
                 next_url,
                 headers=self._headers(prefer_utc=True),
                 params=next_params,
                 timeout=self.cfg.timeout_sec,
             )
-            r.raise_for_status()
-            payload = r.json()
+            response.raise_for_status()
+            payload = response.json()
             items = payload.get("value", [])
 
             for it in items:
@@ -1023,6 +1073,9 @@ class ExchangeClient:
                     # Existing sync behavior: no recurrence serialization.
                     log.warn("exchange_recurrence_not_serialized", id=it.get("id", ""))
 
+                raw = dict(it)
+                raw["calendarId"] = calendar_id
+                raw["calendarName"] = calendar_name
                 out.append(
                     SyncEvent(
                         provider=SOURCE_EXCHANGE,
@@ -1041,11 +1094,30 @@ class ExchangeClient:
                         source=meta.get("source") or None,
                         mode=meta.get("mode") or None,
                         modified_at=parse_any_datetime(it.get("lastModifiedDateTime")),
-                        raw=it,
+                        raw=raw,
                     )
                 )
             next_url = payload.get("@odata.nextLink")
             next_params = None
+        return out
+
+    def list_events(self, start: datetime, end: datetime, log: Logger) -> List[SyncEvent]:
+        out: List[SyncEvent] = []
+        seen_provider_ids = set()
+        calendars = self._list_syncable_calendars(log)
+        if not calendars:
+            return out
+        for calendar in calendars:
+            for event in self._calendar_view_events(calendar["id"], calendar["name"], start, end, log):
+                if event.provider_id in seen_provider_ids:
+                    log.warn(
+                        "exchange_duplicate_event_id_across_calendars",
+                        provider_id=event.provider_id,
+                        calendar=calendar["name"],
+                    )
+                    continue
+                seen_provider_ids.add(event.provider_id)
+                out.append(event)
         return out
 
     def _payload_for_event(self, event: SyncEvent, sync_id: str, source: str, mode: str, blocked_title: str) -> Dict[str, Any]:

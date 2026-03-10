@@ -147,6 +147,60 @@ class CalendarSyncLogicTests(unittest.TestCase):
         self.assertEqual(request_mock.call_count, 2)
         sleep_mock.assert_called_once()
 
+    def test_exchange_list_events_reads_all_editable_calendars(self) -> None:
+        client = mod.ExchangeClient(self.make_cfg())
+        client._token = "token"
+        log = mod.Logger()
+
+        calendars_response = Mock(status_code=200)
+        calendars_response.raise_for_status.side_effect = None
+        calendars_response.json.return_value = {
+            "value": [
+                {"id": "default-cal", "name": "Kalender", "isDefaultCalendar": True, "canEdit": True},
+                {"id": "team-cal", "name": "Team", "isDefaultCalendar": False, "canEdit": True},
+                {"id": "birthdays", "name": "Geburtstage", "isDefaultCalendar": False, "canEdit": False},
+            ]
+        }
+        default_view_response = Mock(status_code=200)
+        default_view_response.raise_for_status.side_effect = None
+        default_view_response.json.return_value = {"value": []}
+        team_view_response = Mock(status_code=200)
+        team_view_response.raise_for_status.side_effect = None
+        team_view_response.json.return_value = {
+            "value": [
+                {
+                    "id": "event-team-1",
+                    "subject": "Manuell in Team-Kalender",
+                    "start": {"dateTime": "2026-04-05T10:00:00.0000000", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-04-05T11:00:00.0000000", "timeZone": "UTC"},
+                    "isAllDay": False,
+                    "lastModifiedDateTime": "2026-03-10T10:00:00Z",
+                    "body": {"contentType": "text", "content": "Beschreibung"},
+                    "location": {"displayName": "Raum A"},
+                    "recurrence": None,
+                }
+            ]
+        }
+
+        with patch.object(
+            mod.requests,
+            "get",
+            side_effect=[calendars_response, default_view_response, team_view_response],
+        ) as get_mock:
+            events = client.list_events(
+                datetime(2026, 4, 5, 0, 0, tzinfo=UTC),
+                datetime(2026, 4, 6, 0, 0, tzinfo=UTC),
+                log,
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].title, "Manuell in Team-Kalender")
+        self.assertEqual(events[0].raw.get("calendarName"), "Team")
+        called_urls = [call.args[0] for call in get_mock.call_args_list]
+        self.assertIn("/users/user@example.com/calendars", called_urls[0])
+        self.assertIn("/users/user@example.com/calendars/default-cal/calendarView", called_urls[1])
+        self.assertIn("/users/user@example.com/calendars/team-cal/calendarView", called_urls[2])
+
     def test_google_upsert_recreates_event_when_time_model_changes(self) -> None:
         cfg = self.make_cfg()
         cfg.google_enabled = True
