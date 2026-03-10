@@ -222,6 +222,7 @@ button.danger {
   border-radius: 24px;
   background: linear-gradient(180deg, rgb(255 255 255 / 82%) 0%, var(--color-glass-bg) 100%);
   backdrop-filter: blur(16px);
+  overflow: hidden;
   box-shadow:
     var(--shadow-soft),
     var(--shadow-panel),
@@ -454,6 +455,10 @@ button.danger {
   padding: 0.2rem 0 2rem;
 }
 
+.content > * {
+  min-width: 0;
+}
+
 .hero {
   position: relative;
   display: flex;
@@ -628,6 +633,16 @@ button.danger {
   gap: 1rem;
 }
 
+.stack > *,
+.settings-stack > *,
+.event-list > *,
+.connection-list > *,
+.backup-list > *,
+.status-check-list > *,
+.log-stream > * {
+  min-width: 0;
+}
+
 label {
   display: grid;
   gap: 0.42rem;
@@ -761,6 +776,13 @@ tbody tr:hover td {
   justify-content: space-between;
   gap: 1rem;
   align-items: flex-start;
+  min-width: 0;
+}
+
+.event-card header > *,
+.backup-card header > *,
+.connection-card header > * {
+  min-width: 0;
 }
 
 .backup-meta {
@@ -1153,6 +1175,8 @@ pre,
 .settings-row strong,
 .settings-row .meta-line {
   min-width: 0;
+  display: block;
+  max-width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
