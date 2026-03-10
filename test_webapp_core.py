@@ -1,6 +1,7 @@
 import base64
 import tempfile
 import unittest
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
@@ -108,6 +109,7 @@ class WebappCoreTests(unittest.TestCase):
         data = {
             "app_name": "Test Calendar Console",
             "database_path": database_path or self.database.path,
+            "backup_directory": (database_path or self.database.path).parent / "backups",
             "app_secret": "test-secret-value",
             "data_encryption_key": TEST_DATA_KEY,
             "session_cookie_name": "test_session",
@@ -223,6 +225,11 @@ class WebappCoreTests(unittest.TestCase):
             provider_payload={"sample": True},
         )
         self.assertEqual(link["external_event_id"], "google-1")
+        self.assertEqual(self.repository.count_internal_events(int(user["id"])), 1)
+        self.assertEqual(self.repository.count_event_links(int(user["id"])), 1)
+        job = self.repository.create_sync_job(int(user["id"]), "test", "Test job")
+        self.assertIsNotNone(job)
+        self.assertEqual(self.repository.count_sync_jobs(int(user["id"])), 1)
         self.assertEqual(len(self.repository.list_links_for_event(int(event["id"]))), 1)
 
     def test_sync_service_deletes_mirrors_when_source_event_disappears(self) -> None:
@@ -1216,6 +1223,8 @@ class WebappCoreTests(unittest.TestCase):
         response = client.get("/app/dashboard")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Interner Hauptkalender", response.text)
+        self.assertIn("Master-Ereignisse", response.text)
+        self.assertIn("Provider-Spiegel", response.text)
         self.assertEqual(response.headers.get("content-security-policy"), "default-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 
         response = client.post(
@@ -1489,6 +1498,87 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("Neu", response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_logs_can_filter_search_and_sort(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-log-filter.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        repo = AppRepository(Database(database_path), SecretBox(TEST_DATA_KEY))
+        user = repo.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        old_job = repo.create_sync_job(int(user["id"]), "test", "Older job")
+        repo.finish_sync_job(int(old_job["id"]), "completed", "Older job done")
+        new_job = repo.create_sync_job(int(user["id"]), "test", "Newer job")
+        repo.finish_sync_job(int(new_job["id"]), "completed", "Newer job done")
+
+        repo.add_sync_log(
+            int(old_job["id"]),
+            level="warn",
+            provider="exchange",
+            action="deleted",
+            sync_id="sync-log-filter-1",
+            message="deleted-match-older",
+            payload={"detail": "deleted-match-older"},
+        )
+        repo.add_sync_log(
+            int(new_job["id"]),
+            level="warn",
+            provider="exchange",
+            action="deleted",
+            sync_id="sync-log-filter-2",
+            message="deleted-match-newer",
+            payload={"detail": "deleted-match-newer"},
+        )
+        repo.add_sync_log(
+            int(new_job["id"]),
+            level="info",
+            provider="google",
+            action="updated",
+            sync_id="sync-log-filter-3",
+            message="updated-google",
+            payload={"detail": "updated-google"},
+        )
+        with Database(database_path).connect() as connection:
+            connection.execute(
+                "UPDATE sync_log_entries SET created_at = ? WHERE message = ?",
+                ("2026-03-01T09:00:00Z", "deleted-match-older"),
+            )
+            connection.execute(
+                "UPDATE sync_log_entries SET created_at = ? WHERE message = ?",
+                ("2026-03-02T09:00:00Z", "deleted-match-newer"),
+            )
+            connection.execute(
+                "UPDATE sync_log_entries SET created_at = ? WHERE message = ?",
+                ("2026-03-03T09:00:00Z", "updated-google"),
+            )
+
+        response = client.get("/app/logs?q=deleted&provider=exchange&action=deleted&sort=oldest")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("2 von 3 Einträgen", response.text)
+        self.assertIn("deleted-match-older", response.text)
+        self.assertIn("deleted-match-newer", response.text)
+        self.assertNotIn("updated-google", response.text)
+        self.assertLess(response.text.find("deleted-match-older"), response.text.find("deleted-match-newer"))
+
+        response = client.get(f"/app/logs?job_id={old_job['id']}")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("deleted-match-older", response.text)
+        self.assertNotIn("deleted-match-newer", response.text)
+        self.assertIn("Nur diesen Job", response.text)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_connection_profiles_can_export_and_import(self) -> None:
         source_db = Path(tempfile.mkdtemp()) / "http-profile-source.sqlite3"
         source_settings = self.make_settings(database_path=source_db, auto_sync_worker_enabled=False)
@@ -1571,6 +1661,126 @@ class WebappCoreTests(unittest.TestCase):
         )
         self.assertEqual(second_import.status_code, 303)
         self.assertEqual(second_import.headers["location"], "/app/connections?notice=profile-imported&created=0&updated=1")
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_backup_manager_can_create_restore_download_and_delete_backups(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-backups.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        repository = AppRepository(Database(database_path))
+        user = repository.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        repository.create_internal_event(
+            int(user["id"]),
+            title="Before Backup",
+            starts_at="2026-03-10T09:00:00Z",
+            ends_at="2026-03-10T10:00:00Z",
+            description="seed event",
+        )
+
+        create_response = client.post(
+            "/app/backups/create",
+            data={"_csrf": self.csrf_token(client)},
+            follow_redirects=False,
+        )
+        self.assertEqual(create_response.status_code, 303)
+        self.assertIn("/app/backups?notice=backup-created", create_response.headers["location"])
+
+        backup_files = sorted(settings.backup_directory.glob("*.zip"))
+        self.assertEqual(len(backup_files), 1)
+        backup_name = backup_files[0].name
+
+        download_response = client.get(f"/app/backups/{backup_name}/download")
+        self.assertEqual(download_response.status_code, 200)
+        self.assertEqual(download_response.headers["content-type"], "application/zip")
+        archive_path = Path(tempfile.mkdtemp()) / backup_name
+        archive_path.write_bytes(download_response.content)
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            names = set(archive.namelist())
+        self.assertIn("manifest.json", names)
+        self.assertIn("database.sqlite3", names)
+        self.assertIn("connections-profile.json", names)
+
+        repository.create_internal_event(
+            int(user["id"]),
+            title="After Backup",
+            starts_at="2026-03-11T09:00:00Z",
+            ends_at="2026-03-11T10:00:00Z",
+            description="should disappear after restore",
+        )
+        self.assertEqual(repository.count_internal_events(int(user["id"])), 2)
+
+        restore_response = client.post(
+            f"/app/backups/{backup_name}/restore",
+            data={
+                "_csrf": self.csrf_token(client),
+                "current_password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(restore_response.status_code, 303)
+        self.assertEqual(restore_response.headers["location"], "/app/backups?notice=backup-restored")
+
+        restored_repository = AppRepository(Database(database_path))
+        restored_events = restored_repository.list_internal_events(int(user["id"]))
+        self.assertEqual(len(restored_events), 1)
+        self.assertEqual(restored_events[0]["title"], "Before Backup")
+
+        delete_response = client.post(
+            f"/app/backups/{backup_name}/delete",
+            data={"_csrf": self.csrf_token(client)},
+            follow_redirects=False,
+        )
+        self.assertEqual(delete_response.status_code, 303)
+        self.assertEqual(delete_response.headers["location"], "/app/backups?notice=backup-deleted")
+        self.assertFalse((settings.backup_directory / backup_name).exists())
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_status_page_and_health_endpoints(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-status.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        health_response = client.get("/healthz")
+        self.assertEqual(health_response.status_code, 200)
+        self.assertIn(health_response.json()["status"], {"ok", "degraded"})
+        self.assertTrue(any(item["label"] == "Datenbank" for item in health_response.json()["checks"]))
+
+        ready_response = client.get("/readyz")
+        self.assertEqual(ready_response.status_code, 200)
+        self.assertEqual(ready_response.json()["status"], "ready")
+
+        status_response = client.get("/app/status")
+        self.assertEqual(status_response.status_code, 200)
+        self.assertIn("Status-Monitor", status_response.text)
+        self.assertIn("Datenbank", status_response.text)
+        self.assertIn("Backup-Verzeichnis", status_response.text)
+        self.assertIn("/healthz", status_response.text)
+        self.assertIn("/readyz", status_response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_requires_csrf_and_rate_limits_login(self) -> None:

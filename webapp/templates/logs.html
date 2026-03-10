@@ -11,7 +11,59 @@
   </div>
   <form method="post" action="/app/sync">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Sync laeuft bereits" if running_job else "Sync jetzt starten" }}</button>
+    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Sync läuft bereits" if running_job else "Sync jetzt starten" }}</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h3>Suche und Sortierung</h3>
+    <span class="meta-line">{{ log_result_summary }}</span>
+  </div>
+  <form method="get" action="/app/logs" class="stack">
+    <div class="filter-grid">
+      <label>Suche
+        <input type="text" name="q" value="{{ log_filters.q }}" placeholder="Sync-ID, Nachricht, Feld, Fehlertext ..." />
+      </label>
+      <label>Provider
+        <select name="provider">
+          <option value="">Alle</option>
+          {% for value in log_provider_options %}
+          <option value="{{ value }}" {% if log_filters.provider == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Level
+        <select name="level">
+          <option value="">Alle</option>
+          {% for value in log_level_options %}
+          <option value="{{ value }}" {% if log_filters.level == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Aktion
+        <select name="action">
+          <option value="">Alle</option>
+          {% for value in log_action_options %}
+          <option value="{{ value }}" {% if log_filters.action == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Sortierung
+        <select name="sort">
+          {% for option in log_sort_options %}
+          <option value="{{ option.value }}" {% if log_filters.sort == option.value %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Job-ID
+        <input type="number" name="job_id" min="1" value="{{ log_filters.job_id if log_filters.job_id else '' }}" placeholder="Optional" />
+      </label>
+    </div>
+    <div class="button-row">
+      <button type="submit">Filter anwenden</button>
+      <a class="ghost-link" href="/app/logs">Filter zurücksetzen</a>
+    </div>
   </form>
 </section>
 
@@ -27,12 +79,15 @@
         </thead>
         <tbody>
           {% for job in jobs %}
-          <tr>
+          <tr class="{% if selected_job_id and selected_job_id == job.id %}table-row-active{% endif %}">
             <td><span class="status-pill">{{ job.status }}</span></td>
             <td>{{ job.triggered_by }}</td>
             <td>{{ job.started_at }}</td>
             <td>{{ job.finished_at or "-" }}</td>
-            <td>{{ job.message }}</td>
+            <td>
+              <div>{{ job.message }}</div>
+              <a class="table-link" href="/app/logs?job_id={{ job.id }}">Nur diesen Job</a>
+            </td>
           </tr>
           {% else %}
           <tr><td colspan="5">Noch keine Jobs vorhanden.</td></tr>
@@ -44,18 +99,27 @@
 
   <article class="panel">
     <div class="panel-head">
-      <h3>Logeintraege</h3>
+      <h3>Logeinträge</h3>
+      <span class="meta-line">{{ log_entries|length }} Treffer</span>
     </div>
     <div class="log-stream">
       {% for entry in log_entries %}
       <article class="log-line">
-        <div class="log-meta">{{ entry.created_at }} · {{ entry.level }} · {{ entry.provider }} · {{ entry.action }} · {{ entry.sync_id }}</div>
+        <div class="log-head">
+          <div class="log-meta">{{ entry.created_at }}</div>
+          <div class="log-tags">
+            <span class="status-pill log-pill log-pill-{{ entry.level_slug }}">{{ entry.level }}</span>
+            <span class="status-pill log-pill">{{ entry.provider_label }}</span>
+            <span class="status-pill log-pill">{{ entry.action_label }}</span>
+            {% if entry.has_sync_id %}<span class="status-pill log-pill">{{ entry.sync_id }}</span>{% endif %}
+          </div>
+        </div>
         <strong>{{ entry.message }}</strong>
         {% if entry.detail_line and entry.detail_line != entry.message %}
         <p class="meta-line">{{ entry.detail_line }}</p>
         {% endif %}
         {% if entry.change_summary %}
-        <p class="change-summary">Geaendert: {{ entry.change_summary }}</p>
+        <p class="change-summary">Geändert: {{ entry.change_summary }}</p>
         <div class="change-table">
           <div class="change-row change-head">
             <span>Feld</span>
@@ -78,7 +142,7 @@
         {% endif %}
       </article>
       {% else %}
-      <p>Keine Logeintraege vorhanden.</p>
+      <p>Keine Logeinträge vorhanden.</p>
       {% endfor %}
     </div>
   </article>

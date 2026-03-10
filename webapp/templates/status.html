@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="brand-kicker">Service Health</div>
+    <h2>Status-Monitor</h2>
+    <p>Hier siehst du, ob Datenbank, Backup-Speicher und Auto-Sync der Anwendung sauber funktionieren.</p>
+    {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
+  </div>
+  <div class="log-tags">
+    {% if status_snapshot.overall_status == "ok" %}
+    <span class="status-pill log-pill log-pill-info">System ok</span>
+    {% elif status_snapshot.overall_status == "degraded" %}
+    <span class="status-pill log-pill log-pill-warn">System eingeschränkt</span>
+    {% else %}
+    <span class="status-pill log-pill log-pill-error">Systemfehler</span>
+    {% endif %}
+  </div>
+</section>
+
+<section class="metric-grid">
+  <article class="metric-card">
+    <span>Backups</span>
+    <strong>{{ status_snapshot.backup_count }}</strong>
+    <small>Verfügbare Snapshots im Backup-Verzeichnis</small>
+  </article>
+  <article class="metric-card">
+    <span>Verbindungen</span>
+    <strong>{{ status_snapshot.active_connection_count }} / {{ status_snapshot.connection_count }}</strong>
+    <small>Aktiv / gesamt</small>
+  </article>
+  <article class="metric-card">
+    <span>Letzter Sync</span>
+    <strong>{{ status_snapshot.latest_job.status if status_snapshot.latest_job else "-" }}</strong>
+    <small>{{ status_snapshot.latest_job.started_at if status_snapshot.latest_job else "Noch kein Lauf vorhanden" }}</small>
+  </article>
+  <article class="metric-card">
+    <span>Health-Checks</span>
+    <strong>{{ status_snapshot.checks|length }}</strong>
+    <small>Live geprüft um {{ status_snapshot.timestamp }}</small>
+  </article>
+</section>
+
+<section class="layout-split">
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Systemprüfungen</h3>
+    </div>
+    <div class="status-check-list">
+      {% for check in status_snapshot.checks %}
+      <article class="settings-row">
+        <div class="status-check-head">
+          <strong>{{ check.label }}</strong>
+          {% if check.status == "ok" %}
+          <span class="status-pill log-pill log-pill-info">ok</span>
+          {% elif check.status == "warn" %}
+          <span class="status-pill log-pill log-pill-warn">warn</span>
+          {% else %}
+          <span class="status-pill log-pill log-pill-error">error</span>
+          {% endif %}
+        </div>
+        <span class="meta-line">{{ check.detail }}</span>
+      </article>
+      {% endfor %}
+    </div>
+  </article>
+
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Service-Endpunkte</h3>
+    </div>
+    <div class="settings-stack">
+      <div class="settings-row">
+        <span class="meta-line">Health</span>
+        <strong>{{ health_url }}</strong>
+      </div>
+      <div class="settings-row">
+        <span class="meta-line">Readiness</span>
+        <strong>{{ ready_url }}</strong>
+      </div>
+      <div class="settings-row">
+        <span class="meta-line">Datenbank</span>
+        <strong>{{ status_snapshot.database_path }}</strong>
+      </div>
+      <div class="settings-row">
+        <span class="meta-line">Backup-Verzeichnis</span>
+        <strong>{{ status_snapshot.backup_directory }}</strong>
+      </div>
+      {% if status_snapshot.running_job %}
+      <div class="settings-row">
+        <span class="meta-line">Aktiver Sync</span>
+        <strong>Job {{ status_snapshot.running_job.id }} seit {{ status_snapshot.running_job.started_at }}</strong>
+      </div>
+      {% endif %}
+    </div>
+  </article>
+</section>
+{% endblock %}

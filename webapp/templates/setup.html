@@ -17,7 +17,7 @@
       <section class="auth-stage">
         <div class="brand-kicker">Initial Setup</div>
         <h1>Secure Control Surface</h1>
-        <p>Lege den ersten Zugang fuer die Webanwendung an und sichere damit Hauptkalender, Provider-Zugaenge und Sync-Log gegen unberechtigten Zugriff ab.</p>
+        <p>Lege den ersten Zugang für die Webanwendung an und sichere damit Hauptkalender, Provider-Zugänge und Sync-Log gegen unberechtigten Zugriff ab.</p>
         <div class="badge-row">
           <span class="status-pill">Password Policy</span>
           <span class="status-pill">Session Signed</span>
@@ -27,14 +27,14 @@
       <section class="auth-card">
         <div class="brand-kicker">Setup</div>
         <h2>Ersten Zugang anlegen</h2>
-        <p>Lege den ersten Login fuer die neue Webanwendung an.</p>
+        <p>Lege den ersten Login für die neue Webanwendung an.</p>
         <p class="meta-line">Empfohlen: mindestens 15 Zeichen.</p>
         {% if error_message %}<p class="auth-error">{{ error_message }}</p>{% endif %}
         <form method="post" action="/setup" class="stack">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <label>E-Mail<input type="email" name="email" required /></label>
           <label>Passwort<input type="password" name="password" required /></label>
-          <button type="submit">Setup abschliessen</button>
+          <button type="submit">Setup abschließen</button>
         </form>
       </section>
     </div>

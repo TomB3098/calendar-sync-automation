@@ -4,7 +4,7 @@
   <div>
     <div class="brand-kicker">Identity & Access</div>
     <h2>Benutzereinstellungen</h2>
-    <p>Kontozugriff, Login-Haertung und Zwei-Faktor-Authentifizierung werden hier zentral verwaltet.</p>
+    <p>Kontozugriff, Login-Härtung und Zwei-Faktor-Authentifizierung werden hier zentral verwaltet.</p>
     {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
   </div>
 </section>
@@ -37,7 +37,7 @@
     </div>
 
     {% if two_factor_enabled %}
-    <p class="meta-line">Beim Login wird nach dem Passwort ein zusaetzlicher TOTP-Code aus deiner Authenticator-App abgefragt.</p>
+    <p class="meta-line">Beim Login wird nach dem Passwort ein zusätzlicher TOTP-Code aus deiner Authenticator-App abgefragt.</p>
     <form method="post" action="/app/settings/two-factor/disable" class="stack">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <label>Aktuelles Passwort
@@ -51,10 +51,10 @@
       </div>
     </form>
     {% elif two_factor_pending %}
-    <p class="meta-line">Die Einrichtung ist vorbereitet. Trage den Schluessel in einer TOTP-App ein und bestaetige danach den ersten 6-stelligen Code.</p>
+    <p class="meta-line">Die Einrichtung ist vorbereitet. Trage den Schlüssel in einer TOTP-App ein und bestätige danach den ersten 6-stelligen Code.</p>
     {% if two_factor_qr_data_uri %}
     <div class="qr-panel">
-      <img src="{{ two_factor_qr_data_uri }}" alt="QR-Code fuer die Zwei-Faktor-Einrichtung" class="qr-image" />
+      <img src="{{ two_factor_qr_data_uri }}" alt="QR-Code für die Zwei-Faktor-Einrichtung" class="qr-image" />
       <p class="meta-line">QR-Code mit deiner Authenticator-App scannen.</p>
     </div>
     {% endif %}
@@ -82,7 +82,7 @@
       <button type="submit" class="link-button light-link">Einrichtung verwerfen</button>
     </form>
     {% else %}
-    <p class="meta-line">Aktiviere TOTP-basierten Login-Schutz fuer dein Konto. Unterstuetzt werden gaengige Apps wie 1Password, Microsoft Authenticator oder Google Authenticator.</p>
+    <p class="meta-line">Aktiviere TOTP-basierten Login-Schutz für dein Konto. Unterstützt werden gängige Apps wie 1Password, Microsoft Authenticator oder Google Authenticator.</p>
     <form method="post" action="/app/settings/two-factor/setup" class="inline-form">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <button type="submit">2FA einrichten</button>

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="brand-kicker">Recovery & Snapshots</div>
+    <h2>Backup-Manager</h2>
+    <p>Hier kannst du vollständige Snapshots der Webanwendung erstellen, herunterladen, wiederherstellen und löschen.</p>
+    {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
+    {% if running_job %}<p class="meta-line">Aktiver Sync: Job {{ running_job.id }} läuft seit {{ running_job.started_at }}</p>{% endif %}
+  </div>
+  <form method="post" action="/app/backups/create">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+    <button type="submit">Backup jetzt erstellen</button>
+  </form>
+</section>
+
+<section class="layout-split">
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Verzeichnis</h3>
+    </div>
+    <div class="settings-stack">
+      <div class="settings-row">
+        <span class="meta-line">Speicherort</span>
+        <strong>{{ backup_directory }}</strong>
+      </div>
+      <div class="settings-row">
+        <span class="meta-line">Hinweis</span>
+        <strong>Ein Restore überschreibt den aktuellen Datenbestand. Dafür ist dein aktuelles Passwort erforderlich.</strong>
+      </div>
+    </div>
+  </article>
+
+  <article class="panel">
+    <div class="panel-head">
+      <h3>Inhalt</h3>
+    </div>
+    <div class="settings-stack">
+      <div class="settings-row">
+        <span class="meta-line">Was im Backup steckt</span>
+        <strong>Datenbank, Verknüpfungen, interne Ereignisse, Event-Links, Sync-Jobs und Logs.</strong>
+      </div>
+      <div class="settings-row">
+        <span class="meta-line">Zusätzlich</span>
+        <strong>Ein exportiertes Verknüpfungsprofil liegt dem Backup als JSON bei.</strong>
+      </div>
+    </div>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h3>Verfügbare Backups</h3>
+    <span class="meta-line">{{ backups|length }} Dateien</span>
+  </div>
+  <div class="backup-list">
+    {% for backup in backups %}
+    <article class="backup-card">
+      <header>
+        <div>
+          <strong>{{ backup.name }}</strong>
+          <div class="meta-line">{{ backup.created_at or "Zeitpunkt unbekannt" }} · {{ backup.database_size_human }}</div>
+        </div>
+        {% if backup.invalid %}
+        <span class="status-pill log-pill log-pill-error">ungültig</span>
+        {% else %}
+        <span class="status-pill log-pill log-pill-info">bereit</span>
+        {% endif %}
+      </header>
+
+      <div class="backup-meta">
+        <span><strong>{{ backup.user_count }}</strong> Nutzer</span>
+        <span><strong>{{ backup.connection_count }}</strong> Verknüpfungen</span>
+        <span><strong>{{ backup.event_count }}</strong> Ereignisse</span>
+        <span><strong>{{ backup.job_count }}</strong> Sync-Jobs</span>
+      </div>
+
+      <p class="meta-line">
+        Datenbank: {{ backup.database_file }}{% if backup.includes_connections_profile %} · mit Verknüpfungsprofil{% endif %}
+      </p>
+
+      <div class="backup-actions">
+        <a class="ghost-link" href="/app/backups/{{ backup.name }}/download">Herunterladen</a>
+        <form method="post" action="/app/backups/{{ backup.name }}/delete" class="inline-form">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button type="submit" class="danger">Löschen</button>
+        </form>
+      </div>
+
+      <form method="post" action="/app/backups/{{ backup.name }}/restore" class="stack restore-form">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <label>Aktuelles Passwort
+          <input type="password" name="current_password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Backup wiederherstellen</button>
+      </form>
+    </article>
+    {% else %}
+    <p>Es sind noch keine Backups vorhanden.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

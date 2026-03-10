@@ -205,6 +205,19 @@ class AppRepository:
             rows = connection.execute(sql, params).fetchall()
         return [self._event_row(row) for row in rows]
 
+    def count_internal_events(self, user_id: int, include_deleted: bool = False) -> int:
+        sql = """
+            SELECT COUNT(*) AS count
+            FROM internal_events
+            WHERE user_id = ?
+        """
+        params: List[Any] = [user_id]
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        with self.database.connect() as connection:
+            row = connection.execute(sql, params).fetchone()
+        return int(row["count"] if row else 0)
+
     def get_internal_event(self, user_id: int, event_id: int) -> Optional[Dict[str, Any]]:
         with self.database.connect() as connection:
             row = connection.execute(
@@ -559,6 +572,14 @@ class AppRepository:
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    def count_sync_jobs(self, user_id: int) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM sync_jobs WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return int(row["count"] if row else 0)
+
     def list_sync_log_entries(self, user_id: int, limit: int = 200) -> List[Dict[str, Any]]:
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -607,6 +628,19 @@ class AppRepository:
                 (event_id,),
             ).fetchall()
         return [self._link_row(row) for row in rows]
+
+    def count_event_links(self, user_id: int, include_deleted: bool = False) -> int:
+        sql = """
+            SELECT COUNT(*) AS count
+            FROM event_links
+            WHERE user_id = ?
+        """
+        params: List[Any] = [user_id]
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        with self.database.connect() as connection:
+            row = connection.execute(sql, params).fetchone()
+        return int(row["count"] if row else 0)
 
     def upsert_event_link(
         self,

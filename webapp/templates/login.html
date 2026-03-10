@@ -17,7 +17,7 @@
       <section class="auth-stage">
         <div class="brand-kicker">Protected Access</div>
         <h1>{{ app_name }}</h1>
-        <p>Secure sync cockpit fuer den internen Hauptkalender, Provider-Verknuepfungen und den vollstaendigen Execution Trace.</p>
+        <p>Secure sync cockpit für den internen Hauptkalender, Provider-Verknüpfungen und den vollständigen Execution Trace.</p>
         <div class="badge-row">
           <span class="status-pill">Encrypted Secrets</span>
           <span class="status-pill">CSRF Guarded</span>
@@ -26,8 +26,8 @@
       </section>
       <section class="auth-card">
         <div class="brand-kicker">Login</div>
-        <h2>Willkommen zurueck</h2>
-        <p>Login fuer den Web-Hauptkalender, Verbindungsmanagement und Sync-Logs.</p>
+        <h2>Willkommen zurück</h2>
+        <p>Login für den Web-Hauptkalender, Verbindungsmanagement und Sync-Logs.</p>
         {% if error_message %}<p class="auth-error">{{ error_message }}</p>{% endif %}
         <form method="post" action="/login" class="stack">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sync_exchange_icloud_calendar import normalize_calendar_description, normalize_singleline_text
@@ -28,6 +28,7 @@ except ModuleNotFoundError:
     SvgPathImage = None
     QRCODE_AVAILABLE = False
 
+from .backup_manager import BackupManager
 from .config import AppSettings
 from .database import Database
 from .repository import AppRepository
@@ -46,6 +47,7 @@ from .security import (
     parse_utc,
     validate_password_policy,
 )
+from .status_monitor import StatusMonitor
 from .sync_service import SOURCE_WEBAPP, SyncService
 
 
@@ -55,6 +57,13 @@ VALID_PROVIDERS = {"google", "exchange", "icloud"}
 CONNECTION_PROFILE_KIND = "aether-calendar-connection-profile"
 CONNECTION_PROFILE_VERSION = 1
 PENDING_LOGIN_COOKIE_NAME = "aether_pending_2fa"
+LOG_SORT_OPTIONS = (
+    ("newest", "Neueste zuerst"),
+    ("oldest", "Älteste zuerst"),
+    ("provider", "Nach Provider"),
+    ("action", "Nach Aktion"),
+    ("severity", "Fehler zuerst"),
+)
 KNOWN_CONNECTION_SETTING_FIELDS = [
     "timeout_sec",
     "exchange_tenant_id",
@@ -135,10 +144,16 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     csrf = CsrfManager(settings.app_secret, settings.session_ttl_hours)
     totp = TotpManager()
     sync_service = SyncService(repository, settings)
+    backup_manager = BackupManager(settings.database_path, settings.backup_directory, settings.app_name)
+    status_monitor = StatusMonitor(settings.database_path, settings.backup_directory, settings.app_name)
     auto_sync_worker = AutoSyncWorker(repository, sync_service, settings) if settings.auto_sync_worker_enabled else None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> Any:
+        try:
+            backup_manager.ensure_directory()
+        except Exception:
+            pass
         if auto_sync_worker:
             auto_sync_worker.start()
         try:
@@ -157,6 +172,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     app.state.csrf = csrf
     app.state.totp = totp
     app.state.sync_service = sync_service
+    app.state.backup_manager = backup_manager
+    app.state.status_monitor = status_monitor
     app.state.auto_sync_worker = auto_sync_worker
 
     if settings.allowed_hosts:
@@ -179,6 +196,16 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not user:
             return _redirect("/login")
         return _redirect("/app/dashboard")
+
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        payload = status_monitor.health_payload(repository=repository, auto_sync_worker=auto_sync_worker)
+        return JSONResponse(payload, status_code=200)
+
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        payload = status_monitor.readiness_payload()
+        return JSONResponse(payload, status_code=200 if payload["status"] == "ready" else 503)
 
     @app.get("/setup", response_class=HTMLResponse)
     async def setup_page(request: Request) -> Any:
@@ -291,7 +318,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             csrf,
             "login_2fa.html",
             {
-                "title": "Zwei-Faktor-Bestaetigung",
+                "title": "Zwei-Faktor-Bestätigung",
                 "app_name": settings.app_name,
                 "pending_email": str(user["email"]),
                 "error_message": _two_factor_login_error_message(request),
@@ -348,7 +375,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not user:
             return _redirect("/setup" if repository.count_users() == 0 else "/login")
         connections = repository.list_connections(int(user["id"]))
-        events = repository.list_internal_events(int(user["id"]))
+        active_event_count = repository.count_internal_events(int(user["id"]))
+        total_event_count = repository.count_internal_events(int(user["id"]), include_deleted=True)
+        archived_event_count = max(0, total_event_count - active_event_count)
+        provider_link_count = repository.count_event_links(int(user["id"]))
         jobs = repository.list_sync_jobs(int(user["id"]), 8)
         running_job = repository.get_running_sync_job(int(user["id"]))
         context = _base_context(request, settings, user, "Dashboard")
@@ -356,8 +386,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             {
                 "connection_count": len(connections),
                 "active_connection_count": len([row for row in connections if row["is_active"]]),
-                "event_count": len(events),
-                "job_count": len(jobs),
+                "active_event_count": active_event_count,
+                "archived_event_count": archived_event_count,
+                "provider_link_count": provider_link_count,
+                "job_count": repository.count_sync_jobs(int(user["id"])),
                 "jobs": jobs,
                 "running_job": running_job,
                 "auto_sync_interval_minutes": int(user.get("auto_sync_interval_minutes") or 0),
@@ -576,6 +608,112 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         repository.toggle_connection(int(user["id"]), connection_id)
         return _redirect("/app/connections?notice=updated")
 
+    @app.get("/app/status", response_class=HTMLResponse)
+    async def status_view(request: Request) -> Any:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        backups = backup_manager.list_backups()
+        snapshot = status_monitor.service_snapshot(
+            repository=repository,
+            auto_sync_worker=auto_sync_worker,
+            user=user,
+            backup_count=len(backups),
+        )
+        context = _base_context(request, settings, user, "Status-Monitor")
+        context.update(
+            {
+                "page_notice": _page_notice(request),
+                "status_snapshot": snapshot,
+                "health_url": "/healthz",
+                "ready_url": "/readyz",
+            }
+        )
+        return _render_template(request, settings, csrf, "status.html", context)
+
+    @app.get("/app/backups", response_class=HTMLResponse)
+    async def backups_view(request: Request) -> Any:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        backups = [_backup_for_template(item) for item in backup_manager.list_backups()]
+        context = _base_context(request, settings, user, "Backup-Manager")
+        context.update(
+            {
+                "page_notice": _page_notice(request),
+                "backups": backups,
+                "running_job": repository.get_running_sync_job(int(user["id"])),
+                "backup_directory": str(settings.backup_directory),
+            }
+        )
+        return _render_template(request, settings, csrf, "backups.html", context)
+
+    @app.post("/app/backups/create")
+    async def create_backup(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/backups?error=security")
+        try:
+            connections_profile = _build_connection_profile_payload(repository.list_connections(int(user["id"])))
+            backup = backup_manager.create_backup(
+                created_by=str(user["email"]),
+                connections_profile=connections_profile,
+            )
+        except Exception:
+            return _redirect("/app/backups?error=backup")
+        return _redirect(f"/app/backups?notice=backup-created&name={backup.get('name', '')}")
+
+    @app.get("/app/backups/{backup_name}/download")
+    async def download_backup(request: Request, backup_name: str) -> Response:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        try:
+            backup_path = backup_manager.get_backup_path(backup_name)
+            if not backup_path.exists():
+                return _redirect("/app/backups?error=backup")
+        except Exception:
+            return _redirect("/app/backups?error=backup")
+        return FileResponse(backup_path, media_type="application/zip", filename=backup_path.name)
+
+    @app.post("/app/backups/{backup_name}/restore")
+    async def restore_backup(request: Request, backup_name: str) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/backups?error=security")
+        if repository.get_running_sync_job(int(user["id"])):
+            return _redirect("/app/backups?error=backup-running")
+        current_password = str(form.get("current_password") or "")
+        if not passwords.verify_password(current_password, str(user["password_hash"])):
+            return _redirect("/app/backups?error=backup-auth")
+        try:
+            backup_manager.restore_backup(backup_name)
+            database.initialize()
+            repository.reencrypt_legacy_connection_settings()
+        except Exception:
+            return _redirect("/app/backups?error=backup")
+        return _redirect("/app/backups?notice=backup-restored")
+
+    @app.post("/app/backups/{backup_name}/delete")
+    async def delete_backup(request: Request, backup_name: str) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/backups?error=security")
+        try:
+            backup_manager.delete_backup(backup_name)
+        except Exception:
+            return _redirect("/app/backups?error=backup")
+        return _redirect("/app/backups?notice=backup-deleted")
+
     @app.get("/app/settings", response_class=HTMLResponse)
     async def settings_view(request: Request) -> Any:
         user = _require_user(request, repository, sessions, settings)
@@ -713,11 +851,22 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not user:
             return _redirect("/setup" if repository.count_users() == 0 else "/login")
         running_job = repository.get_running_sync_job(int(user["id"]))
+        jobs = repository.list_sync_jobs(int(user["id"]), 25)
+        raw_log_entries = repository.list_sync_log_entries(int(user["id"]), 500)
+        log_filters = _parse_log_filters(request)
+        filtered_log_entries = _filter_log_entries(raw_log_entries, log_filters)
         context = _base_context(request, settings, user, "Sync-Logs")
         context.update(
             {
-                "jobs": repository.list_sync_jobs(int(user["id"]), 25),
-                "log_entries": [_log_entry_for_template(entry) for entry in repository.list_sync_log_entries(int(user["id"]), 250)],
+                "jobs": jobs,
+                "log_entries": [_log_entry_for_template(entry) for entry in filtered_log_entries],
+                "log_filters": log_filters,
+                "log_provider_options": _log_filter_options(raw_log_entries, "provider"),
+                "log_level_options": _log_filter_options(raw_log_entries, "level"),
+                "log_action_options": _log_filter_options(raw_log_entries, "action"),
+                "log_sort_options": [{"value": value, "label": label} for value, label in LOG_SORT_OPTIONS],
+                "log_result_summary": _log_result_summary(log_filters, len(filtered_log_entries), len(raw_log_entries)),
+                "selected_job_id": log_filters["job_id"],
                 "running_job": running_job,
                 "sync_notice": _sync_notice(request),
                 "page_notice": _page_notice(request),
@@ -953,11 +1102,11 @@ def _page_notice(request: Request) -> Optional[str]:
     error = str(request.query_params.get("error") or "").strip().lower()
     notice = str(request.query_params.get("notice") or "").strip().lower()
     if notice == "saved":
-        return "Aenderung gespeichert."
+        return "Änderung gespeichert."
     if notice == "autosync-updated":
         return "Auto-Sync-Intervall gespeichert."
     if notice == "two-factor-setup-started":
-        return "Einrichtungsschluessel erzeugt. Bitte in deiner Authenticator-App eintragen und mit Code bestaetigen."
+        return "Einrichtungsschlüssel erzeugt. Bitte in deiner Authenticator-App eintragen und mit Code bestätigen."
     if notice == "two-factor-setup-cancelled":
         return "Die offene Zwei-Faktor-Einrichtung wurde verworfen."
     if notice == "two-factor-enabled":
@@ -965,21 +1114,34 @@ def _page_notice(request: Request) -> Optional[str]:
     if notice == "two-factor-disabled":
         return "Zwei-Faktor-Authentifizierung wurde deaktiviert."
     if notice == "deleted":
-        return "Eintrag geloescht."
+        return "Eintrag gelöscht."
     if notice == "updated":
         return "Status aktualisiert."
     if notice == "profile-imported":
         created = str(request.query_params.get("created") or "0")
         updated = str(request.query_params.get("updated") or "0")
         return f"Profil importiert. Neu: {created}, aktualisiert: {updated}."
+    if notice == "backup-created":
+        name = str(request.query_params.get("name") or "").strip()
+        return f"Backup erstellt: {name}" if name else "Backup erstellt."
+    if notice == "backup-restored":
+        return "Backup erfolgreich wiederhergestellt."
+    if notice == "backup-deleted":
+        return "Backup gelöscht."
     if error == "security":
-        return "Die Anfrage wurde aus Sicherheitsgruenden abgelehnt."
+        return "Die Anfrage wurde aus Sicherheitsgründen abgelehnt."
     if error == "validation":
-        return "Die Eingaben sind ungueltig oder unvollstaendig."
+        return "Die Eingaben sind ungültig oder unvollständig."
     if error == "profile":
-        return "Die Profildatei ist ungueltig oder konnte nicht gelesen werden."
+        return "Die Profildatei ist ungültig oder konnte nicht gelesen werden."
     if error == "two-factor":
-        return "Die Zwei-Faktor-Aktion konnte nicht bestaetigt werden. Bitte Passwort und Code pruefen."
+        return "Die Zwei-Faktor-Aktion konnte nicht bestätigt werden. Bitte Passwort und Code prüfen."
+    if error == "backup":
+        return "Das Backup konnte nicht verarbeitet werden."
+    if error == "backup-auth":
+        return "Für die Wiederherstellung ist das aktuelle Passwort erforderlich."
+    if error == "backup-running":
+        return "Während einer laufenden Synchronisierung kann kein Backup eingespielt werden."
     return None
 
 
@@ -988,11 +1150,11 @@ def _login_error_message(request: Request) -> Optional[str]:
     if error == "security":
         return "Die Anfrage konnte nicht verifiziert werden. Bitte die Seite neu laden."
     if error == "rate-limit":
-        return "Zu viele fehlgeschlagene Anmeldeversuche. Bitte spaeter erneut versuchen."
+        return "Zu viele fehlgeschlagene Anmeldeversuche. Bitte später erneut versuchen."
     if error == "auth":
         return "Anmeldung fehlgeschlagen."
     if error == "two-factor-expired":
-        return "Die Zwei-Faktor-Bestaetigung ist abgelaufen. Bitte erneut anmelden."
+        return "Die Zwei-Faktor-Bestätigung ist abgelaufen. Bitte erneut anmelden."
     return None
 
 
@@ -1001,9 +1163,9 @@ def _two_factor_login_error_message(request: Request) -> Optional[str]:
     if error == "security":
         return "Die Anfrage konnte nicht verifiziert werden. Bitte die Seite neu laden."
     if error == "rate-limit":
-        return "Zu viele fehlgeschlagene Anmeldeversuche. Bitte spaeter erneut versuchen."
+        return "Zu viele fehlgeschlagene Anmeldeversuche. Bitte später erneut versuchen."
     if error == "auth":
-        return "Der Zwei-Faktor-Code ist ungueltig."
+        return "Der Zwei-Faktor-Code ist ungültig."
     return None
 
 
@@ -1012,7 +1174,7 @@ def _setup_error_message(request: Request) -> Optional[str]:
     if error == "security":
         return "Die Anfrage konnte nicht verifiziert werden. Bitte die Seite neu laden."
     if error == "email":
-        return "Bitte eine gueltige E-Mail-Adresse angeben."
+        return "Bitte eine gültige E-Mail-Adresse angeben."
     if error == "password":
         return "Bitte ein ausreichend langes Passwort verwenden."
     return None
@@ -1259,6 +1421,120 @@ def _display_log_value(value: Any) -> str:
     return str(value)
 
 
+def _parse_log_filters(request: Request) -> Dict[str, Any]:
+    selected_sort = str(request.query_params.get("sort") or "newest").strip().lower()
+    allowed_sorts = {value for value, _label in LOG_SORT_OPTIONS}
+    return {
+        "q": str(request.query_params.get("q") or "").strip(),
+        "provider": str(request.query_params.get("provider") or "").strip().lower(),
+        "level": str(request.query_params.get("level") or "").strip().lower(),
+        "action": str(request.query_params.get("action") or "").strip().lower(),
+        "job_id": int(str(request.query_params.get("job_id") or "0")) if str(request.query_params.get("job_id") or "").isdigit() else 0,
+        "sort": selected_sort if selected_sort in allowed_sorts else "newest",
+    }
+
+
+def _log_filter_options(entries: List[Dict[str, Any]], key: str) -> List[str]:
+    values = sorted({str(entry.get(key) or "").strip() for entry in entries if str(entry.get(key) or "").strip()})
+    return values
+
+
+def _log_search_text(entry: Dict[str, Any]) -> str:
+    payload = entry.get("payload") or {}
+    search_parts = [
+        str(entry.get("message") or ""),
+        str(entry.get("provider") or ""),
+        str(entry.get("action") or ""),
+        str(entry.get("level") or ""),
+        str(entry.get("sync_id") or ""),
+        str(entry.get("triggered_by") or ""),
+    ]
+    detail = payload.get("detail")
+    if detail:
+        search_parts.append(str(detail))
+    for change in payload.get("changes") or []:
+        if isinstance(change, dict):
+            search_parts.extend(
+                [
+                    str(change.get("label") or ""),
+                    str(change.get("before") or ""),
+                    str(change.get("after") or ""),
+                ]
+            )
+    if payload:
+        search_parts.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return " ".join(part for part in search_parts if part).lower()
+
+
+def _sort_log_entries(entries: List[Dict[str, Any]], sort_mode: str) -> List[Dict[str, Any]]:
+    def timestamp(entry: Dict[str, Any]) -> datetime:
+        return parse_utc(str(entry.get("created_at") or "")) or datetime(1970, 1, 1, tzinfo=UTC)
+
+    def severity_rank(entry: Dict[str, Any]) -> int:
+        level = str(entry.get("level") or "").strip().lower()
+        if level == "error":
+            return 0
+        if level == "warn":
+            return 1
+        return 2
+
+    ordered = list(entries)
+    if sort_mode == "oldest":
+        ordered.sort(key=lambda entry: (timestamp(entry), int(entry.get("id") or 0)))
+        return ordered
+    if sort_mode == "provider":
+        ordered.sort(key=lambda entry: (str(entry.get("provider") or "zzzz"), -timestamp(entry).timestamp(), -int(entry.get("id") or 0)))
+        return ordered
+    if sort_mode == "action":
+        ordered.sort(key=lambda entry: (str(entry.get("action") or "zzzz"), -timestamp(entry).timestamp(), -int(entry.get("id") or 0)))
+        return ordered
+    if sort_mode == "severity":
+        ordered.sort(key=lambda entry: (severity_rank(entry), -timestamp(entry).timestamp(), -int(entry.get("id") or 0)))
+        return ordered
+    ordered.sort(key=lambda entry: (timestamp(entry), int(entry.get("id") or 0)), reverse=True)
+    return ordered
+
+
+def _filter_log_entries(entries: List[Dict[str, Any]], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    query = str(filters.get("q") or "").strip().lower()
+    provider = str(filters.get("provider") or "").strip().lower()
+    level = str(filters.get("level") or "").strip().lower()
+    action = str(filters.get("action") or "").strip().lower()
+    job_id = int(filters.get("job_id") or 0)
+
+    filtered: List[Dict[str, Any]] = []
+    for entry in entries:
+        if provider and str(entry.get("provider") or "").strip().lower() != provider:
+            continue
+        if level and str(entry.get("level") or "").strip().lower() != level:
+            continue
+        if action and str(entry.get("action") or "").strip().lower() != action:
+            continue
+        if job_id and int(entry.get("job_id") or 0) != job_id:
+            continue
+        if query and query not in _log_search_text(entry):
+            continue
+        filtered.append(entry)
+    return _sort_log_entries(filtered, str(filters.get("sort") or "newest"))
+
+
+def _log_result_summary(filters: Dict[str, Any], result_count: int, total_count: int) -> str:
+    parts = [f"{result_count} von {total_count} Einträgen"]
+    if filters.get("q"):
+        parts.append(f"Suche: {filters['q']}")
+    if filters.get("provider"):
+        parts.append(f"Provider: {filters['provider']}")
+    if filters.get("level"):
+        parts.append(f"Level: {filters['level']}")
+    if filters.get("action"):
+        parts.append(f"Aktion: {filters['action']}")
+    if filters.get("job_id"):
+        parts.append(f"Job: {filters['job_id']}")
+    sort_label = next((label for value, label in LOG_SORT_OPTIONS if value == filters.get("sort")), "Neueste zuerst")
+    parts.append(f"Sortierung: {sort_label}")
+    return " · ".join(parts)
+
+
 def _log_entry_for_template(entry: Dict[str, Any]) -> Dict[str, Any]:
     enriched = dict(entry)
     payload = dict(entry.get("payload") or {})
@@ -1283,6 +1559,10 @@ def _log_entry_for_template(entry: Dict[str, Any]) -> Dict[str, Any]:
     enriched["payload_preview"] = (
         json.dumps(preview_payload, ensure_ascii=False, indent=2) if preview_payload else ""
     )
+    enriched["provider_label"] = str(entry.get("provider") or "system")
+    enriched["action_label"] = str(entry.get("action") or "event")
+    enriched["level_slug"] = str(entry.get("level") or "info").strip().lower() or "info"
+    enriched["has_sync_id"] = bool(str(entry.get("sync_id") or "").strip())
     return enriched
 
 
@@ -1295,6 +1575,29 @@ def _connection_for_template(connection: Dict[str, Any]) -> Dict[str, Any]:
     enriched["settings_pretty"] = json.dumps(enriched["masked_settings"], indent=2, ensure_ascii=False)
     enriched["policy_label"] = _provider_policy_label(str(connection["provider"]))
     return enriched
+
+
+def _backup_for_template(backup: Dict[str, Any]) -> Dict[str, Any]:
+    enriched = dict(backup)
+    counts = dict(backup.get("counts") or {})
+    enriched["database_size_human"] = _format_bytes(int(backup.get("database_size_bytes") or 0))
+    enriched["user_count"] = int(counts.get("users") or 0)
+    enriched["connection_count"] = int(counts.get("calendar_connections") or 0)
+    enriched["event_count"] = int(counts.get("internal_events") or 0)
+    enriched["job_count"] = int(counts.get("sync_jobs") or 0)
+    return enriched
+
+
+def _format_bytes(size: int) -> str:
+    value = float(max(0, size))
+    units = ("B", "KB", "MB", "GB")
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{int(size)} B"
 
 
 def _extract_connection_settings(form: Any) -> Dict[str, Any]:
@@ -1426,7 +1729,7 @@ def _sync_notice(request: Request) -> Optional[str]:
     if sync_state == "started":
         return "Synchronisierung im Hintergrund gestartet" + suffix
     if sync_state == "already-running":
-        return "Es laeuft bereits eine Synchronisierung" + suffix
+        return "Es läuft bereits eine Synchronisierung" + suffix
     if sync_state == "failed":
         return "Synchronisierung konnte nicht gestartet werden" + suffix
     return None

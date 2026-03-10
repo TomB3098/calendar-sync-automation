@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="hero">
+<section class="hero compact hero-dashboard">
   <div>
     <div class="brand-kicker">Migration Stage 1</div>
     <h2>Interner Hauptkalender mit Sync-Konsole</h2>
-    <p>Die Webanwendung fuehrt interne Events, externe Connections und den manuellen Sync-Lauf an einem Ort zusammen.</p>
+    <p>Die Webanwendung führt interne Ereignisse, externe Verknüpfungen und den manuellen Sync-Lauf an einem Ort zusammen.</p>
     {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
-    {% if running_job %}<p class="meta-line">Aktiver Sync: Job {{ running_job.id }} laeuft seit {{ running_job.started_at }}</p>{% endif %}
+    {% if running_job %}<p class="meta-line">Aktiver Sync: Job {{ running_job.id }} läuft seit {{ running_job.started_at }}</p>{% endif %}
     <p class="meta-line">{{ auto_sync_status }}</p>
   </div>
   <form method="post" action="/app/sync">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Synchronisierung laeuft" if running_job else "Jetzt synchronisieren" }}</button>
+    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Synchronisierung läuft" if running_job else "Jetzt synchronisieren" }}</button>
   </form>
 </section>
 
@@ -30,10 +30,28 @@
 </section>
 
 <section class="metric-grid">
-  <article class="metric-card"><span>Events</span><strong>{{ event_count }}</strong></article>
-  <article class="metric-card"><span>Connections</span><strong>{{ connection_count }}</strong></article>
-  <article class="metric-card"><span>Aktiv</span><strong>{{ active_connection_count }}</strong></article>
-  <article class="metric-card"><span>Jobs</span><strong>{{ job_count }}</strong></article>
+  <article class="metric-card">
+    <span>Master-Ereignisse</span>
+    <strong>{{ active_event_count }}</strong>
+    <small>
+      Aktiv im Hauptkalender{% if archived_event_count %} · {{ archived_event_count }} archiviert{% endif %}
+    </small>
+  </article>
+  <article class="metric-card">
+    <span>Provider-Spiegel</span>
+    <strong>{{ provider_link_count }}</strong>
+    <small>Aktive Sync-Links über Exchange, iCloud und Google</small>
+  </article>
+  <article class="metric-card">
+    <span>Verbindungen</span>
+    <strong>{{ active_connection_count }} / {{ connection_count }}</strong>
+    <small>Aktiv / gesamt</small>
+  </article>
+  <article class="metric-card">
+    <span>Sync-Jobs</span>
+    <strong>{{ job_count }}</strong>
+    <small>Gesamtzahl aller Läufe</small>
+  </article>
 </section>
 
 <section class="panel">

@@ -23,6 +23,7 @@ def _env_csv(name: str, default: str) -> Tuple[str, ...]:
 class AppSettings:
     app_name: str
     database_path: Path
+    backup_directory: Path
     app_secret: str
     data_encryption_key: str
     session_cookie_name: str
@@ -49,9 +50,12 @@ class AppSettings:
         same_site = os.getenv("CAL_WEBAPP_SESSION_COOKIE_SAMESITE", "lax").strip().lower() or "lax"
         if same_site not in {"lax", "strict", "none"}:
             same_site = "lax"
+        database_path = Path(os.getenv("CAL_WEBAPP_DB_PATH", "data/calendar_webapp.sqlite3"))
+        backup_directory = Path(os.getenv("CAL_WEBAPP_BACKUP_DIR", str(database_path.parent / "backups")))
         return cls(
             app_name=os.getenv("CAL_WEBAPP_NAME", "Aether Calendar Console"),
-            database_path=Path(os.getenv("CAL_WEBAPP_DB_PATH", "data/calendar_webapp.sqlite3")),
+            database_path=database_path,
+            backup_directory=backup_directory,
             app_secret=os.getenv("CAL_WEBAPP_SECRET", ""),
             data_encryption_key=os.getenv("CAL_WEBAPP_DATA_KEY", ""),
             session_cookie_name=os.getenv("CAL_WEBAPP_SESSION_COOKIE", "aether_session"),

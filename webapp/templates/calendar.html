@@ -18,7 +18,7 @@
     <div class="button-row">
       <a class="ghost-link" href="/app/calendar?month={{ calendar_month.prev_value }}">Vorheriger Monat</a>
       <span class="status-pill">{{ calendar_month.value }}</span>
-      <a class="ghost-link" href="/app/calendar?month={{ calendar_month.next_value }}">Naechster Monat</a>
+      <a class="ghost-link" href="/app/calendar?month={{ calendar_month.next_value }}">Nächster Monat</a>
     </div>
   </div>
   <div class="month-weekdays">
@@ -43,7 +43,7 @@
           </a>
           {% endfor %}
           {% if day.overflow_count %}
-          <div class="calendar-overflow">+{{ day.overflow_count }} weitere Eintraege</div>
+          <div class="calendar-overflow">+{{ day.overflow_count }} weitere Einträge</div>
           {% endif %}
         </div>
       </article>
@@ -95,7 +95,7 @@
           <a class="ghost-link" href="/app/calendar?edit={{ event.id }}">Bearbeiten</a>
           <form method="post" action="/app/events/{{ event.id }}/delete">
             <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-            <button class="danger" type="submit">Loeschen</button>
+            <button class="danger" type="submit">Löschen</button>
           </form>
         </div>
       </article>
