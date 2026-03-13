@@ -322,8 +322,8 @@ class SyncService:
         for connection in connections:
             try:
                 adapter = self._build_adapter(connection)
-                adapters[int(connection["id"])] = adapter
                 remote_events = adapter.list_events(start, end, logger)
+                adapters[int(connection["id"])] = adapter
                 remote_events_by_connection[int(connection["id"])] = {
                     event.provider_id: event for event in remote_events
                 }
@@ -347,11 +347,14 @@ class SyncService:
             adapter = adapters.get(int(connection["id"]))
             if not adapter:
                 continue
+            remote_events = remote_events_by_connection.get(int(connection["id"]))
+            if remote_events is None:
+                continue
             self._import_connection_events(
                 user_id,
                 connection,
                 adapter,
-                remote_events_by_connection[int(connection["id"])],
+                remote_events,
                 logger,
                 start,
                 end,
@@ -361,11 +364,14 @@ class SyncService:
             adapter = adapters.get(int(connection["id"]))
             if not adapter:
                 continue
+            remote_events = remote_events_by_connection.get(int(connection["id"]))
+            if remote_events is None:
+                continue
             self._export_internal_events(
                 user_id,
                 connection,
                 adapter,
-                remote_events_by_connection[int(connection["id"])],
+                remote_events,
                 logger,
                 start,
                 end,

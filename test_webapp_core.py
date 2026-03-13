@@ -92,6 +92,11 @@ class FailingConnectionAdapter(FakeConnectionAdapter):
         raise RuntimeError("transient adapter failure")
 
 
+class FailingFetchConnectionAdapter(FakeConnectionAdapter):
+    def list_events(self, start: Any, end: Any, log: SyncJobLogger) -> List[SyncEvent]:
+        raise RuntimeError("transient fetch failure")
+
+
 class FakeSyncService(SyncService):
     def __init__(self, repository: AppRepository, settings: AppSettings, adapters_by_connection_id: Dict[int, BaseConnectionAdapter]):
         super().__init__(repository, settings)
@@ -1174,6 +1179,72 @@ class WebappCoreTests(unittest.TestCase):
         self.assertEqual(finished["status"], "completed_with_errors")
         errors = self.repository.list_sync_log_entries(int(user["id"]), 50)
         self.assertTrue(any(entry["message"] == "provider_export_event_failed" for entry in errors))
+
+    def test_run_sync_job_continues_when_single_provider_fetch_fails(self) -> None:
+        settings = self.make_settings()
+        starts_at, ends_at = self.in_window_times()
+        user = self.repository.create_user("fetchpartial@example.com", "hash")
+        exchange_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="exchange",
+            display_name="Work Exchange",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "exchange_tenant_id": "tenant",
+                "exchange_client_id": "client",
+                "exchange_client_secret": "secret",
+                "exchange_user": "fetchpartial@example.com",
+            },
+        )
+        icloud_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="icloud",
+            display_name="iCloud",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "icloud_user": "icloud@example.com",
+                "icloud_app_pw": "pw",
+                "icloud_principal_path": "/principal/",
+            },
+        )
+        remote_event = SyncEvent(
+            provider="exchange",
+            provider_id="exchange-remote-1",
+            title="Fetched Exchange Event",
+            start={"dateTime": starts_at, "timeZone": "UTC", "all_day": False},
+            end={"dateTime": ends_at, "timeZone": "UTC", "all_day": False},
+            description="From exchange",
+            location="HQ",
+            recurrence=[],
+            sync_origin="exchange",
+            source="exchange",
+            mode="full",
+            modified_at=datetime.now(UTC),
+            uid="exchange-uid-1",
+            raw={"id": "exchange-remote-1"},
+        )
+
+        service = FakeSyncService(
+            self.repository,
+            settings,
+            {
+                int(exchange_connection["id"]): FakeConnectionAdapter(exchange_connection, object(), [remote_event]),
+                int(icloud_connection["id"]): FailingFetchConnectionAdapter(icloud_connection, object(), []),
+            },
+        )
+
+        job = self.repository.create_sync_job(int(user["id"]), "test", "Fetch partial failure test")
+        finished = service.run_sync_job(int(user["id"]), int(job["id"]))
+
+        self.assertEqual(finished["status"], "completed_with_errors")
+        logs = self.repository.list_sync_log_entries(int(user["id"]), 50)
+        self.assertTrue(any(entry["message"] == "provider_fetch_failed" for entry in logs))
+        self.assertFalse(any(entry["message"] == "sync_failed" for entry in logs))
+        events = self.repository.list_internal_events(int(user["id"]))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["title"], "Fetched Exchange Event")
 
     def test_sync_service_prevents_duplicate_running_jobs(self) -> None:
         settings = self.make_settings()
