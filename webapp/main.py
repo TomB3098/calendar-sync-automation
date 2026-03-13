@@ -427,10 +427,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         archived_event_count = max(0, total_event_count - active_event_count)
         provider_link_count = repository.count_event_links(int(user["id"]))
         jobs = repository.list_sync_jobs(int(user["id"]), 8)
-        raw_dashboard_errors = repository.list_sync_log_entries(int(user["id"]), 120)
-        dashboard_errors = [
-            _log_entry_for_template(entry) for entry in raw_dashboard_errors if _log_entry_has_error(entry)
+        recent_dashboard_logs = [
+            _log_entry_for_template(entry) for entry in repository.list_sync_log_entries(int(user["id"]), 160)
         ]
+        dashboard_errors = [entry for entry in recent_dashboard_logs if _log_entry_has_error(entry)]
+        dashboard_changes = [entry for entry in recent_dashboard_logs if _log_entry_has_visible_change(entry)]
         running_job = repository.get_running_sync_job(int(user["id"]))
         context = _base_context(request, settings, user, "Dashboard")
         context.update(
@@ -442,6 +443,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 "provider_link_count": provider_link_count,
                 "job_count": repository.count_sync_jobs(int(user["id"])),
                 "jobs": jobs,
+                "dashboard_changes": dashboard_changes[:6],
+                "dashboard_change_count": len(dashboard_changes),
                 "dashboard_errors": dashboard_errors[:6],
                 "dashboard_error_count": len(dashboard_errors),
                 "running_job": running_job,
@@ -1836,6 +1839,22 @@ def _log_entry_has_error(entry: Dict[str, Any]) -> bool:
     if str(payload.get("error") or "").strip():
         return True
     return str(entry.get("level") or "").strip().lower() == "error"
+
+
+def _log_entry_has_visible_change(entry: Dict[str, Any]) -> bool:
+    if _log_entry_has_error(entry):
+        return False
+    action = str(entry.get("action") or "").strip().lower()
+    message = str(entry.get("message") or "").strip().lower()
+    detail = str(dict(entry.get("payload") or {}).get("detail") or "").strip().lower()
+    changes = list(entry.get("changes") or [])
+    if "no-change" in message or "no change" in message or "no-change" in detail or "no change" in detail:
+        return False
+    if action in {"summary", "list", "skipped"}:
+        return False
+    if changes:
+        return True
+    return action in {"created", "updated", "deleted"}
 
 
 def _has_required_connection_settings(provider: str, settings_payload: Dict[str, Any]) -> bool:

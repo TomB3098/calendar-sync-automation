@@ -1369,6 +1369,63 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("https://oauth2.googleapis.com/token", response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_dashboard_shows_only_real_changes_not_no_change_logs(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-dashboard-changes.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        repository = AppRepository(Database(database_path), SecretBox(TEST_DATA_KEY))
+        user = repository.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        job = repository.create_sync_job(int(user["id"]), "owner@example.com", "Sync completed", status="completed")
+        repository.add_sync_log(
+            int(job["id"]),
+            level="info",
+            provider="exchange",
+            action="updated",
+            sync_id="sync-change-1",
+            message="imported-into-webapp",
+            payload={
+                "detail": "imported-into-webapp",
+                "changes": [
+                    {"label": "Start", "before": "2026-03-13 09:00 UTC", "after": "2026-03-13 10:00 UTC"},
+                    {"label": "Titel", "before": "Alt", "after": "Neu"},
+                ],
+            },
+        )
+        repository.add_sync_log(
+            int(job["id"]),
+            level="info",
+            provider="google",
+            action="skipped",
+            sync_id="sync-change-2",
+            message="no-change",
+            payload={
+                "detail": "no-change",
+                "changes": [],
+            },
+        )
+
+        response = client.get("/app/dashboard")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Letzte Änderungen", response.text)
+        self.assertIn("imported-into-webapp", response.text)
+        self.assertIn("Geändert: Start, Titel", response.text)
+        self.assertNotIn("no-change", response.text)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_google_connect_workflow_creates_connection(self) -> None:
         database_path = Path(tempfile.mkdtemp()) / "http-google-connect.sqlite3"
         settings = self.make_settings(
