@@ -1243,58 +1243,179 @@ pre,
   align-items: center;
 }
 
-.legal-page {
-  padding: 1.5rem;
+.public-footer-block {
+  min-width: 0;
 }
 
-.legal-copy {
-  max-width: 72ch;
-  margin-bottom: 1.2rem;
+.legal-hero {
+  padding: 1.45rem;
 }
 
-.legal-copy h2,
-.legal-section h3 {
+.legal-hero-copy {
+  max-width: 76ch;
+}
+
+.legal-hero-copy h2,
+.legal-card h3 {
   margin: 0;
   font-family: "Poppins", "Segoe UI", sans-serif;
   color: var(--color-surface-dark-1);
 }
 
-.legal-copy h2 {
+.legal-hero-copy h2 {
   margin-top: 0.25rem;
-  font-size: clamp(1.8rem, 3vw, 2.4rem);
-  line-height: 1.08;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
 }
 
-.legal-copy p {
-  margin: 0.75rem 0 0;
+.legal-hero-copy p {
+  margin: 0.8rem 0 0;
+  max-width: 70ch;
+  font-size: 1.02rem;
 }
 
-.legal-grid {
+.legal-badge-row {
+  margin-top: 1.15rem;
+}
+
+.legal-meta-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-top: 1.3rem;
 }
 
-.legal-section {
+.legal-meta-card {
   min-width: 0;
-  padding: 1.1rem 1.15rem;
+  padding: 1rem 1.05rem;
   border-radius: 22px;
   border: 1px solid rgb(154 167 181 / 18%);
-  background: rgb(255 255 255 / 54%);
-  overflow: hidden;
+  background: rgb(255 255 255 / 56%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 90%);
 }
 
-.legal-section h3 {
+.legal-meta-card span {
+  display: block;
+  margin-bottom: 0.4rem;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.legal-meta-card strong {
+  display: block;
+  min-width: 0;
+  font-family: "Poppins", "Segoe UI", sans-serif;
   font-size: 1rem;
-}
-
-.legal-section p {
-  margin: 0.7rem 0 0;
+  line-height: 1.35;
+  color: var(--color-surface-dark-1);
   overflow-wrap: anywhere;
 }
 
-.legal-section-wide {
-  margin-top: 1rem;
+.legal-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.legal-outline {
+  position: sticky;
+  top: 1.2rem;
+  padding: 1.15rem;
+}
+
+.legal-outline-nav {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+}
+
+.legal-outline-nav a {
+  display: block;
+  min-width: 0;
+  padding: 0.72rem 0.9rem;
+  border-radius: 16px;
+  border: 1px solid rgb(154 167 181 / 18%);
+  background: rgb(255 255 255 / 48%);
+  text-decoration: none;
+  font-family: "Poppins", "Segoe UI", sans-serif;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--color-surface-dark-1);
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease;
+}
+
+.legal-outline-nav a:hover {
+  transform: translateY(-1px);
+  border-color: rgb(67 169 209 / 34%);
+  background: rgb(255 255 255 / 80%);
+}
+
+.legal-content {
+  display: grid;
+  gap: 1rem;
+}
+
+.legal-card {
+  scroll-margin-top: 1.4rem;
+  padding: 1.2rem;
+}
+
+.legal-card h3 {
+  margin-top: 0.22rem;
+  font-size: clamp(1.2rem, 2vw, 1.65rem);
+  line-height: 1.14;
+}
+
+.legal-card p {
+  margin: 0.82rem 0 0;
+  max-width: 78ch;
+  overflow-wrap: anywhere;
+}
+
+.legal-list {
+  display: grid;
+  gap: 0.7rem;
+  margin: 1rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.legal-list li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.legal-list-facts {
+  padding-left: 0;
+  list-style: none;
+}
+
+.legal-list-facts li {
+  position: relative;
+  padding: 0.8rem 0.95rem 0.8rem 2.5rem;
+  border-radius: 18px;
+  border: 1px solid rgb(154 167 181 / 16%);
+  background: linear-gradient(180deg, rgb(255 255 255 / 74%) 0%, rgb(255 255 255 / 50%) 100%);
+}
+
+.legal-list-facts li::before {
+  content: "";
+  position: absolute;
+  left: 1rem;
+  top: 1rem;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  box-shadow: 0 0 0 4px rgb(67 169 209 / 10%);
 }
 
 .settings-stack {
@@ -1414,8 +1535,14 @@ pre,
   .layout-split,
   .filter-grid,
   .auth-shell,
-  .legal-grid {
+  .legal-layout,
+  .legal-meta-grid {
     grid-template-columns: 1fr;
+  }
+
+  .legal-outline {
+    position: relative;
+    top: 0;
   }
 }
 

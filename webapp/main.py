@@ -211,26 +211,14 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     async def imprint_page(request: Request) -> Any:
         user = _current_user(request, repository, sessions, settings)
         context = _public_context(request, settings, "Impressum", user)
-        context.update(
-            {
-                "legal_dispute_notice": (
-                    "Wir nehmen nicht an Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teil "
-                    "und sind dazu auch nicht verpflichtet."
-                ),
-            }
-        )
+        context.update(_imprint_page_content(settings))
         return _render_template(request, settings, csrf, "imprint.html", context)
 
     @app.get("/datenschutz", response_class=HTMLResponse)
     async def privacy_page(request: Request) -> Any:
         user = _current_user(request, repository, sessions, settings)
         context = _public_context(request, settings, "Datenschutz", user)
-        context.update(
-            {
-                "privacy_last_updated": "13. März 2026",
-                "privacy_provider_names": ["Microsoft Exchange", "Apple iCloud", "Google Calendar"],
-            }
-        )
+        context.update(_privacy_page_content(settings))
         return _render_template(request, settings, csrf, "privacy.html", context)
 
     @app.get("/setup", response_class=HTMLResponse)
@@ -1138,6 +1126,282 @@ def _legal_context(settings: AppSettings) -> Dict[str, Any]:
         "legal_whatsapp": settings.legal_whatsapp,
         "legal_vat_id": settings.legal_vat_id,
         "legal_website_url": settings.legal_website_url,
+    }
+
+
+def _imprint_page_content(settings: AppSettings) -> Dict[str, Any]:
+    return {
+        "legal_hero_eyebrow": "Angaben gemäß § 5 DDG",
+        "legal_hero_title": "Impressum",
+        "legal_hero_intro": (
+            "Diese Angaben gelten für die interne Kalender-Synchronisationsplattform und ergänzen die "
+            "rechtlichen Anbieterinformationen von Webdesign Becker für den Betrieb dieser Anwendung."
+        ),
+        "legal_badges": ["Interner Betrieb", "Transparente Anbieterangaben", "Kein öffentliches Self-Service-Produkt"],
+        "legal_meta_cards": [
+            {"label": "Anbieter", "value": settings.legal_business_name},
+            {"label": "Vertretung", "value": settings.legal_representative_name},
+            {"label": "Standort", "value": f"{settings.legal_street}, {settings.legal_postal_city}"},
+            {"label": "Kontakt", "value": settings.legal_email},
+        ],
+        "legal_outline": [
+            {"id": "anbieter", "label": "Anbieter"},
+            {"id": "kontakt", "label": "Kontakt"},
+            {"id": "register", "label": "Steuerangaben"},
+            {"id": "verantwortung", "label": "Inhaltlich verantwortlich"},
+            {"id": "streitbeilegung", "label": "Streitbeilegung"},
+        ],
+        "legal_sections": [
+            {
+                "id": "anbieter",
+                "eyebrow": "Anbieter",
+                "title": settings.legal_business_name,
+                "paragraphs": [
+                    f"{settings.legal_street}, {settings.legal_postal_city}",
+                    "Die Anwendung wird als intern genutzte Webanwendung zur Verwaltung, Protokollierung und "
+                    "Synchronisierung von Kalenderdaten betrieben.",
+                ],
+            },
+            {
+                "id": "kontakt",
+                "eyebrow": "Kontakt",
+                "title": "Direkte Erreichbarkeit",
+                "list_style": "fact",
+                "bullets": [
+                    f"E-Mail: {settings.legal_email}",
+                    f"Telefon: {settings.legal_phone}",
+                    f"WhatsApp: {settings.legal_whatsapp}" if settings.legal_whatsapp else "",
+                    f"Website: {settings.legal_website_url}",
+                ],
+            },
+            {
+                "id": "register",
+                "eyebrow": "Steuerliche Angaben",
+                "title": "Umsatzsteuer-ID",
+                "paragraphs": [
+                    f"Umsatzsteuer-Identifikationsnummer gemäß § 27a Umsatzsteuergesetz: {settings.legal_vat_id}",
+                    "Weitere Registerangaben werden in dieser Anwendung derzeit nicht ausgewiesen.",
+                ],
+            },
+            {
+                "id": "verantwortung",
+                "eyebrow": "Redaktionell verantwortlich",
+                "title": "Inhalt nach § 18 Abs. 2 MStV",
+                "paragraphs": [
+                    f"{settings.legal_representative_name}, {settings.legal_street}, {settings.legal_postal_city}",
+                ],
+            },
+            {
+                "id": "streitbeilegung",
+                "eyebrow": "Verbraucherhinweis",
+                "title": "Streitbeilegung",
+                "paragraphs": [
+                    "Wir nehmen nicht an Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teil "
+                    "und sind dazu auch nicht verpflichtet.",
+                    "Die Anwendung ist für den internen Gebrauch vorgesehen und richtet sich nicht an "
+                    "Verbraucher als öffentlich buchbares Online-Produkt.",
+                ],
+            },
+        ],
+    }
+
+
+def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
+    providers = ["Microsoft Exchange", "Apple iCloud", "Google Calendar"]
+    return {
+        "legal_hero_eyebrow": "Datenschutzerklärung",
+        "legal_hero_title": "Datenschutz für die interne Kalender-Sync-Webapp",
+        "legal_hero_intro": (
+            "Diese Datenschutzerklärung beschreibt die Verarbeitung personenbezogener Daten in der internen "
+            "Kalender-Synchronisationsplattform. Die Anwendung dient ausschließlich der internen Verwaltung, "
+            "Absicherung und Synchronisierung verbundener Kalender und ist nicht als öffentliches "
+            "Self-Service-Angebot gedacht."
+        ),
+        "legal_badges": ["Nur interner Gebrauch", "Keine Marketing-Tracker standardmäßig", "Login- und Sync-Schutz aktiv"],
+        "legal_meta_cards": [
+            {"label": "Verantwortlicher", "value": settings.legal_business_name},
+            {"label": "Kontakt", "value": settings.legal_email},
+            {"label": "Letzte Aktualisierung", "value": "13. März 2026"},
+            {"label": "Aufsichtsbehörde", "value": "Beschwerderecht bei der zuständigen Datenschutzaufsicht, insbesondere der LDI NRW"},
+        ],
+        "legal_outline": [
+            {"id": "verantwortlicher", "label": "Verantwortlicher"},
+            {"id": "zwecke", "label": "Zwecke & Kategorien"},
+            {"id": "rechtsgrundlagen", "label": "Rechtsgrundlagen"},
+            {"id": "quellen", "label": "Datenquellen"},
+            {"id": "empfaenger", "label": "Empfänger"},
+            {"id": "drittstaaten", "label": "Drittstaaten"},
+            {"id": "speicherung", "label": "Speicherung"},
+            {"id": "cookies", "label": "Cookies"},
+            {"id": "rechte", "label": "Rechte"},
+            {"id": "pflicht", "label": "Bereitstellung"},
+            {"id": "automatisierung", "label": "Automatisierte Entscheidungen"},
+        ],
+        "legal_sections": [
+            {
+                "id": "verantwortlicher",
+                "eyebrow": "1. Verantwortlicher",
+                "title": settings.legal_business_name,
+                "paragraphs": [
+                    f"{settings.legal_street}, {settings.legal_postal_city}",
+                    f"E-Mail: {settings.legal_email}",
+                    "Die App wird als geschütztes internes Werkzeug zum Verwalten, Spiegeln, Protokollieren und "
+                    "Wiederherstellen von Kalenderdaten betrieben.",
+                ],
+            },
+            {
+                "id": "zwecke",
+                "eyebrow": "2. Zwecke der Verarbeitung",
+                "title": "Wofür diese App Daten verarbeitet",
+                "list_style": "fact",
+                "bullets": [
+                    "Anlage und Verwaltung lokaler Benutzerkonten einschließlich optionaler Zwei-Faktor-Authentifizierung",
+                    "Speicherung und Verschlüsselung von Zugangsdaten für verbundene Kalenderdienste",
+                    "Import, Anzeige, Bearbeitung und Synchronisierung von Kalenderereignissen",
+                    "Erstellung von Sync-Logs, Fehlerprotokollen, Statusmeldungen und Backup-Dateien",
+                    "Absicherung des Systems gegen Missbrauch, Fehlkonfigurationen und unbefugte Zugriffe",
+                ],
+                "paragraphs": [
+                    "Verarbeitet werden dabei insbesondere Kontodaten, Kalenderinhalte, Metadaten zu Ereignissen, "
+                    "Anmeldedaten, technische Protokolle, IP-bezogene Sicherheitsdaten sowie Daten aus Backups "
+                    "und importierten Verbindungsprofilen.",
+                ],
+            },
+            {
+                "id": "rechtsgrundlagen",
+                "eyebrow": "3. Rechtsgrundlagen",
+                "title": "Worauf die Verarbeitung gestützt wird",
+                "paragraphs": [
+                    "Soweit die App zur Bereitstellung des internen Kalenderbetriebs genutzt wird, erfolgt die "
+                    "Verarbeitung regelmäßig auf Grundlage von Art. 6 Abs. 1 lit. b DSGVO.",
+                    "Sicherheitsbezogene Verarbeitungen wie Login-Schutz, Rate-Limits, Session-Absicherung, "
+                    "Zwei-Faktor-Authentifizierung, Audit-Logs, Fehleranalyse und Backups erfolgen zusätzlich "
+                    "auf Grundlage von Art. 6 Abs. 1 lit. f DSGVO.",
+                    "Soweit Kalenderinhalte über verbundene Konten bewusst eingespielt werden, erfolgt die "
+                    "Übertragung außerdem auf Grundlage der jeweiligen Nutzungsentscheidung der berechtigten "
+                    "Anwender innerhalb des internen Einsatzrahmens.",
+                ],
+            },
+            {
+                "id": "quellen",
+                "eyebrow": "4. Herkunft der Daten",
+                "title": "Woher die Daten stammen",
+                "paragraphs": [
+                    "Die Daten stammen entweder aus manuellen Eingaben innerhalb der Webapp oder aus verbundenen "
+                    "Kalendersystemen wie Microsoft Exchange, Apple iCloud oder Google Calendar.",
+                    "Soweit Termine aus angebundenen Fremdsystemen importiert werden, werden diese Informationen "
+                    "nicht öffentlich erhoben, sondern aus den vom Nutzer selbst oder intern freigegebenen "
+                    "Kalenderquellen übernommen.",
+                ],
+            },
+            {
+                "id": "empfaenger",
+                "eyebrow": "5. Empfänger und Kategorien von Empfängern",
+                "title": "Wer Daten erhalten kann",
+                "paragraphs": [
+                    "Innerhalb des Betriebs erhalten nur berechtigte Personen Zugriff auf die Daten, soweit dies "
+                    "für Administration, Support, Konfiguration oder die Nutzung der Anwendung erforderlich ist.",
+                    f"Bei aktivierten Verknüpfungen werden Kalenderdaten an die jeweils verbundenen Dienste übertragen: {', '.join(providers)}.",
+                    "Hinzu kommen Hosting- und Infrastruktur-Dienstleister, soweit deren Einbindung für den "
+                    "Serverbetrieb, Backups oder die technische Bereitstellung der Anwendung erforderlich ist.",
+                ],
+            },
+            {
+                "id": "drittstaaten",
+                "eyebrow": "6. Drittlandbezug",
+                "title": "Übermittlungen außerhalb des EWR",
+                "paragraphs": [
+                    "Je nach gewähltem Kalenderanbieter kann eine Verarbeitung personenbezogener Daten in Staaten "
+                    "außerhalb des Europäischen Wirtschaftsraums, insbesondere in den USA, nicht ausgeschlossen werden.",
+                    "Soweit solche Anbieter genutzt werden, richtet sich die jeweilige Drittlandverarbeitung nach "
+                    "deren vertraglichen und regulatorischen Datenschutzmechanismen. Die App selbst fordert diese "
+                    "Verbindungen nur auf ausdrückliche Konfiguration hin an.",
+                ],
+            },
+            {
+                "id": "speicherung",
+                "eyebrow": "7. Speicherdauer",
+                "title": "Wie lange Daten gespeichert werden",
+                "list_style": "fact",
+                "bullets": [
+                    "Benutzerkonten und Verbindungskonfigurationen bis zur Löschung oder Deaktivierung durch den Verantwortlichen",
+                    "Session- und CSRF-Cookies nur für die jeweilige Laufzeit oder bis zum Logout",
+                    "Sync-Logs, Job-Historien und Statusdaten grundsätzlich solange, wie sie für Betrieb, Nachvollziehbarkeit und Fehlersuche benötigt werden",
+                    "Backups bis zur manuellen Löschung oder bis zur internen Bereinigung nach den eingesetzten Aufbewahrungsregeln",
+                ],
+                "paragraphs": [
+                    "Gesetzliche Aufbewahrungspflichten und berechtigte Sicherheitsinteressen können eine darüber "
+                    "hinausgehende Speicherung im Einzelfall erforderlich machen.",
+                ],
+            },
+            {
+                "id": "cookies",
+                "eyebrow": "8. Cookies und technische Speicherungen",
+                "title": "Welche lokalen Speicherungen genutzt werden",
+                "paragraphs": [
+                    "Die Anwendung verwendet standardmäßig nur technisch erforderliche Cookies, insbesondere für "
+                    "Login-Sessions, CSRF-Schutz und gegebenenfalls den temporären Zwei-Faktor-Anmeldeprozess.",
+                    "Es werden in der Standardkonfiguration keine Marketing-, Profiling- oder Reichweiten-Tracker "
+                    "der Webapp selbst eingesetzt.",
+                ],
+            },
+            {
+                "id": "rechte",
+                "eyebrow": "9. Rechte betroffener Personen",
+                "title": "Welche Rechte bestehen",
+                "list_style": "fact",
+                "bullets": [
+                    "Recht auf Auskunft nach Art. 15 DSGVO",
+                    "Recht auf Berichtigung nach Art. 16 DSGVO",
+                    "Recht auf Löschung nach Art. 17 DSGVO",
+                    "Recht auf Einschränkung der Verarbeitung nach Art. 18 DSGVO",
+                    "Recht auf Datenübertragbarkeit nach Art. 20 DSGVO, soweit anwendbar",
+                    "Widerspruchsrecht nach Art. 21 DSGVO",
+                    "Beschwerderecht bei einer Datenschutzaufsichtsbehörde",
+                ],
+                "paragraphs": [
+                    "Für Beschwerden kommt insbesondere die zuständige Aufsichtsbehörde am Unternehmenssitz in "
+                    "Nordrhein-Westfalen in Betracht.",
+                ],
+            },
+            {
+                "id": "pflicht",
+                "eyebrow": "10. Erforderlichkeit der Bereitstellung",
+                "title": "Ob Daten bereitgestellt werden müssen",
+                "paragraphs": [
+                    "Ohne die für Konto, Sicherheit und Kalendersynchronisierung erforderlichen Angaben kann die "
+                    "Anwendung ganz oder teilweise nicht genutzt werden.",
+                    "Welche Inhalte in externe Kalender gespiegelt werden, hängt von der jeweils eingerichteten "
+                    "Verbindung und den gewählten Sync-Regeln ab.",
+                ],
+            },
+            {
+                "id": "automatisierung",
+                "eyebrow": "11. Automatisierte Entscheidungen",
+                "title": "Keine automatisierten Entscheidungen im Sinne von Art. 22 DSGVO",
+                "paragraphs": [
+                    "Die Anwendung trifft keine automatisierten Entscheidungen mit rechtlicher oder vergleichbar "
+                    "erheblicher Wirkung im Sinne von Art. 22 DSGVO.",
+                    "Sync-Konflikte und Löschungen werden technisch regelbasiert verarbeitet, dienen jedoch allein "
+                    "dem Betrieb der Anwendung und nicht der Bewertung von Personen.",
+                ],
+            },
+            {
+                "id": "hinweise",
+                "eyebrow": "12. Besondere Hinweise",
+                "title": "Interner Gebrauch und sensible Daten",
+                "paragraphs": [
+                    "Die Webapp ist für den internen Gebrauch konzipiert. Eine öffentliche Registrierung oder "
+                    "offene Nutzung durch unbestimmte Dritte ist nicht vorgesehen.",
+                    "Die Anwendung ist nicht speziell für die gezielte Verarbeitung besonderer Kategorien "
+                    "personenbezogener Daten im Sinne von Art. 9 DSGVO ausgelegt. Sollten solche Inhalte über "
+                    "verbundene Kalender verarbeitet werden, erfolgt dies in der Verantwortung des jeweils "
+                    "nutzenden Unternehmens.",
+                    "Stand: 13. März 2026. Dieser Text wurde auf die konkrete App-Funktion zugeschnitten, ersetzt "
+                    "aber keine individuelle rechtliche Beratung.",
+                ],
+            },
+        ],
     }
 
 

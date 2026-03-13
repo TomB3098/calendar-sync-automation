@@ -33,12 +33,12 @@
         {% block content %}{% endblock %}
       </main>
       <footer class="public-footer">
-        <div>
+        <div class="public-footer-block">
           <strong>{{ legal_brand_name }}</strong><br />
           {{ legal_street }}<br />
           {{ legal_postal_city }}
         </div>
-        <div>
+        <div class="public-footer-block">
           <a href="mailto:{{ legal_email }}">{{ legal_email }}</a><br />
           <a href="tel:{{ legal_phone | replace(' ', '') }}">{{ legal_phone }}</a>
         </div>

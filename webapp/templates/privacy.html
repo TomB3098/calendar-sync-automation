@@ -1,50 +1,56 @@
 {% extends "legal_base.html" %}
 
 {% block content %}
-<section class="legal-page panel">
-  <div class="legal-copy">
-    <div class="brand-kicker">Datenschutzerklärung</div>
-    <h2>Interne Kalender-Sync-Webapp</h2>
-    <p>Diese Anwendung dient ausschließlich der internen Verwaltung und Synchronisierung von Kalenderdaten zwischen verbundenen Konten und wird nicht als öffentliches Verbraucherprodukt angeboten.</p>
+<section class="legal-hero panel">
+  <div class="legal-hero-copy">
+    <div class="brand-kicker">{{ legal_hero_eyebrow }}</div>
+    <h2>{{ legal_hero_title }}</h2>
+    <p>{{ legal_hero_intro }}</p>
+    <div class="badge-row legal-badge-row">
+      {% for badge in legal_badges %}
+      <span class="status-pill">{{ badge }}</span>
+      {% endfor %}
+    </div>
   </div>
-  <div class="legal-grid">
-    <article class="legal-section">
-      <h3>1. Verantwortlicher</h3>
-      <p>{{ legal_business_name }}<br />{{ legal_street }}<br />{{ legal_postal_city }}</p>
-      <p>E-Mail: <a href="mailto:{{ legal_email }}">{{ legal_email }}</a></p>
+  <div class="legal-meta-grid">
+    {% for item in legal_meta_cards %}
+    <article class="legal-meta-card">
+      <span>{{ item.label }}</span>
+      <strong>{{ item.value }}</strong>
     </article>
-    <article class="legal-section">
-      <h3>2. Verarbeitete Daten</h3>
-      <p>Die App verarbeitet Login-Daten, Session-Informationen, Zwei-Faktor-Status, gespeicherte Kalenderverknüpfungen, Kalenderinhalte, Sync-Logs und bei Nutzung des Backup-Managers erzeugte Sicherungsdateien.</p>
-    </article>
-    <article class="legal-section">
-      <h3>3. Zweck der Verarbeitung</h3>
-      <p>Die Daten werden ausschließlich genutzt, um Nutzerzugänge abzusichern, Kalender zu verknüpfen, Termine zwischen den verbundenen Diensten zu synchronisieren, Änderungen nachvollziehbar zu protokollieren und Systemwiederherstellungen zu ermöglichen.</p>
-    </article>
-    <article class="legal-section">
-      <h3>4. Rechtsgrundlagen</h3>
-      <p>Die Verarbeitung erfolgt auf Basis von Art. 6 Abs. 1 lit. b DSGVO zur Bereitstellung der internen Anwendung und Art. 6 Abs. 1 lit. f DSGVO für den sicheren, nachvollziehbaren und ausfallsicheren Betrieb der Synchronisationsplattform.</p>
-    </article>
-    <article class="legal-section">
-      <h3>5. Empfänger</h3>
-      <p>Je nach eingerichteter Verknüpfung werden Termine und Metadaten an {{ privacy_provider_names | join(', ') }} übertragen. Zusätzlich werden Daten im Hosting- und Backup-Kontext auf den von dir betriebenen Systemen verarbeitet.</p>
-    </article>
-    <article class="legal-section">
-      <h3>6. Speicherdauer</h3>
-      <p>Benutzer-, Kalender- und Logdaten bleiben gespeichert, solange die Anwendung aktiv genutzt wird oder gesetzliche Aufbewahrungs- und Nachweispflichten bestehen. Backups bleiben bis zu ihrer manuellen Löschung oder nach deinen internen Aufbewahrungsregeln erhalten.</p>
-    </article>
-    <article class="legal-section">
-      <h3>7. Sicherheitsmaßnahmen</h3>
-      <p>Die App verwendet passwortgeschützte Logins, optional Zwei-Faktor-Authentifizierung, signierte Sessions, CSRF-Schutz, verschlüsselte Provider-Secrets und detaillierte Sync-Protokolle zur Nachvollziehbarkeit.</p>
-    </article>
-    <article class="legal-section">
-      <h3>8. Betroffenenrechte</h3>
-      <p>Du hast das Recht auf Auskunft, Berichtigung, Löschung, Einschränkung der Verarbeitung sowie auf Widerspruch gegen die Verarbeitung personenbezogener Daten im Rahmen der gesetzlichen Vorgaben.</p>
-    </article>
+    {% endfor %}
   </div>
-  <article class="legal-section legal-section-wide">
-    <h3>Stand</h3>
-    <p>{{ privacy_last_updated }}. Dieser Text bildet die technische Grundlage der Anwendung ab und ersetzt keine individuelle Rechtsberatung.</p>
-  </article>
+</section>
+
+<section class="legal-layout">
+  <aside class="legal-outline panel">
+    <div class="brand-kicker">Schnellnavigation</div>
+    <nav class="legal-outline-nav">
+      {% for item in legal_outline %}
+      <a href="#{{ item.id }}">{{ item.label }}</a>
+      {% endfor %}
+    </nav>
+  </aside>
+
+  <div class="legal-content">
+    {% for section in legal_sections %}
+    <article id="{{ section.id }}" class="legal-card panel">
+      <div class="brand-kicker">{{ section.eyebrow }}</div>
+      <h3>{{ section.title }}</h3>
+      {% for paragraph in section.paragraphs %}
+      <p>{{ paragraph }}</p>
+      {% endfor %}
+      {% if section.bullets %}
+      <ul class="legal-list {% if section.list_style == 'fact' %}legal-list-facts{% endif %}">
+        {% for bullet in section.bullets %}
+        {% if bullet %}
+        <li>{{ bullet }}</li>
+        {% endif %}
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
 </section>
 {% endblock %}
