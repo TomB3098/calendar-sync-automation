@@ -7,12 +7,19 @@
     <p>Hier laufen alle Jobs, Provider-Aktionen und Fehlermeldungen zusammen.</p>
     {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
     {% if sync_notice %}<p class="notice-line">{{ sync_notice }}</p>{% endif %}
-    {% if running_job %}<p class="meta-line">Aktiver Lauf: Job {{ running_job.id }} seit {{ running_job.started_at }}</p>{% endif %}
+    {% if running_job %}<p class="meta-line">Aktiver Lauf: Job {{ running_job.id }} seit {{ running_job.started_at }}
+    </p>{% endif %}
   </div>
   <form method="post" action="/app/sync">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
     <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Sync läuft bereits" if running_job else "Sync jetzt starten" }}</button>
   </form>
+  {% if running_job %}
+  <form method="post" action="/app/sync/cancel">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+    <button type="submit">Sync abbrechen</button>
+  </form>
+  {% endif %}
 </section>
 
 <section class="panel">
@@ -23,7 +30,8 @@
   <form method="get" action="/app/logs" class="stack">
     <div class="filter-grid">
       <label>Suche
-        <input type="text" name="q" value="{{ log_filters.q }}" placeholder="Sync-ID, Nachricht, Feld, Fehlertext ..." />
+        <input type="text" name="q" value="{{ log_filters.q }}"
+          placeholder="Sync-ID, Nachricht, Feld, Fehlertext ..." />
       </label>
       <label>Provider
         <select name="provider">
@@ -57,7 +65,8 @@
         </select>
       </label>
       <label>Job-ID
-        <input type="number" name="job_id" min="1" value="{{ log_filters.job_id if log_filters.job_id else '' }}" placeholder="Optional" />
+        <input type="number" name="job_id" min="1" value="{{ log_filters.job_id if log_filters.job_id else '' }}"
+          placeholder="Optional" />
       </label>
     </div>
     <div class="button-row">
@@ -75,7 +84,13 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Status</th><th>Trigger</th><th>Start</th><th>Ende</th><th>Nachricht</th></tr>
+          <tr>
+            <th>Status</th>
+            <th>Trigger</th>
+            <th>Start</th>
+            <th>Ende</th>
+            <th>Nachricht</th>
+          </tr>
         </thead>
         <tbody>
           {% for job in jobs %}
@@ -90,7 +105,9 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="5">Noch keine Jobs vorhanden.</td></tr>
+          <tr>
+            <td colspan="5">Noch keine Jobs vorhanden.</td>
+          </tr>
           {% endfor %}
         </tbody>
       </table>

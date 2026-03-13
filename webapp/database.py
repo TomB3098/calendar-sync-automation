@@ -115,17 +115,11 @@ CREATE TABLE IF NOT EXISTS auth_login_attempts (
 UPDATE sync_jobs
 SET status = 'abandoned',
     message = CASE
-        WHEN message = '' THEN 'Recovered duplicate running job during startup'
-        ELSE message
+        WHEN message = '' THEN 'Recovered running job during startup'
+        ELSE message || ' (recovered during startup)'
     END,
     finished_at = COALESCE(finished_at, started_at)
-WHERE status = 'running'
-  AND id NOT IN (
-    SELECT MAX(id)
-    FROM sync_jobs
-    WHERE status = 'running'
-    GROUP BY user_id
-  );
+WHERE status = 'running';
 
 CREATE INDEX IF NOT EXISTS idx_connections_user_id ON calendar_connections(user_id);
 CREATE INDEX IF NOT EXISTS idx_events_user_id ON internal_events(user_id);

@@ -1013,6 +1013,19 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             return _redirect(f"/app/logs?sync=failed&job_id={job['id']}")
         return _redirect(f"/app/logs?sync=started&job_id={job['id']}")
 
+    @app.post("/app/sync/cancel")
+    async def cancel_sync(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/logs?error=security")
+        running_job = repository.get_running_sync_job(int(user["id"]))
+        if running_job:
+            repository.finish_sync_job(int(running_job["id"]), "abandoned", "Manuell vom Benutzer abgebrochen")
+        return _redirect("/app/logs?notice=sync-cancelled")
+
     @app.get("/app/logs", response_class=HTMLResponse)
     async def logs_view(request: Request) -> Any:
         user = _require_user(request, repository, sessions, settings)
@@ -1758,6 +1771,8 @@ def _page_notice(request: Request) -> Optional[str]:
         return "Backup erfolgreich wiederhergestellt."
     if notice == "backup-deleted":
         return "Backup gelöscht."
+    if notice == "sync-cancelled":
+        return "Hängengebliebene Synchronisierung wurde abgebrochen."
     if error == "security":
         return "Die Anfrage wurde aus Sicherheitsgründen abgelehnt."
     if error == "validation":
