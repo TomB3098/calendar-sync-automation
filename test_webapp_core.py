@@ -1275,9 +1275,15 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("Microsoft Exchange", privacy_response.text)
         self.assertIn("Google Calendar", privacy_response.text)
 
+        terms_response = client.get("/nutzungsbedingungen")
+        self.assertEqual(terms_response.status_code, 200)
+        self.assertIn("ausschließlich für den internen Gebrauch", terms_response.text)
+        self.assertIn("Serverstandort in Europa", terms_response.text)
+
         login_response = client.get("/login")
         self.assertIn("/impressum", login_response.text)
         self.assertIn("/datenschutz", login_response.text)
+        self.assertIn("/nutzungsbedingungen", login_response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_dashboard_can_update_auto_sync_interval(self) -> None:

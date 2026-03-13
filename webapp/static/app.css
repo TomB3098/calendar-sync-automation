@@ -1201,7 +1201,7 @@ pre,
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1rem 1.4rem;
   align-items: end;
-  padding: 1.25rem 1.4rem 1.35rem;
+  padding: 1.35rem 1.5rem 1.5rem;
   border: 1px solid var(--color-glass-border);
   border-radius: 28px;
   background:
@@ -1300,10 +1300,16 @@ pre,
 .public-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
+  gap: 0.9rem;
   justify-self: end;
   justify-content: flex-end;
-  align-self: start;
+  align-self: center;
+  padding: 0.2rem 0 0.1rem;
+}
+
+.public-actions .ghost-link {
+  min-height: 48px;
+  padding-inline: 1.25rem;
 }
 
 .public-footer-block {
@@ -1671,6 +1677,7 @@ pre,
   .public-actions {
     justify-self: start;
     justify-content: flex-start;
+    padding-top: 0.35rem;
   }
 }
 

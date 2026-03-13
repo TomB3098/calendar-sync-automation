@@ -221,6 +221,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         context.update(_privacy_page_content(settings))
         return _render_template(request, settings, csrf, "privacy.html", context)
 
+    @app.get("/nutzungsbedingungen", response_class=HTMLResponse)
+    async def terms_page(request: Request) -> Any:
+        user = _current_user(request, repository, sessions, settings)
+        context = _public_context(request, settings, "Nutzungsbedingungen", user)
+        context.update(_terms_page_content(settings))
+        return _render_template(request, settings, csrf, "terms.html", context)
+
     @app.get("/setup", response_class=HTMLResponse)
     async def setup_page(request: Request) -> Any:
         if repository.count_users() > 0:
@@ -1222,7 +1229,7 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
             {"label": "Verantwortlicher", "value": settings.legal_business_name},
             {"label": "Kontakt", "value": settings.legal_email},
             {"label": "Letzte Aktualisierung", "value": "13. März 2026"},
-            {"label": "Aufsichtsbehörde", "value": "Beschwerderecht bei der zuständigen Datenschutzaufsicht, insbesondere der LDI NRW"},
+            {"label": "Serverstandort", "value": "Europa"},
         ],
         "legal_outline": [
             {"id": "verantwortlicher", "label": "Verantwortlicher"},
@@ -1230,6 +1237,7 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
             {"id": "rechtsgrundlagen", "label": "Rechtsgrundlagen"},
             {"id": "quellen", "label": "Datenquellen"},
             {"id": "empfaenger", "label": "Empfänger"},
+            {"id": "hosting", "label": "Hosting & Serverstandort"},
             {"id": "drittstaaten", "label": "Drittstaaten"},
             {"id": "speicherung", "label": "Speicherung"},
             {"id": "cookies", "label": "Cookies"},
@@ -1307,8 +1315,19 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
                 ],
             },
             {
+                "id": "hosting",
+                "eyebrow": "6. Hosting und Serverstandort",
+                "title": "Betrieb in Europa",
+                "paragraphs": [
+                    "Die Anwendung ist für einen Betrieb auf Infrastruktur mit Serverstandort in Europa ausgelegt. "
+                    "Datenbank, Logdaten, Sicherungen und Systemdateien sollen innerhalb Europas verarbeitet werden.",
+                    "Abweichende Verarbeitungsorte können sich nur insoweit ergeben, wie ausdrücklich verbundene "
+                    "externe Kalenderdienste ihrerseits Daten außerhalb des Europäischen Wirtschaftsraums verarbeiten.",
+                ],
+            },
+            {
                 "id": "drittstaaten",
-                "eyebrow": "6. Drittlandbezug",
+                "eyebrow": "7. Drittlandbezug",
                 "title": "Übermittlungen außerhalb des EWR",
                 "paragraphs": [
                     "Je nach gewähltem Kalenderanbieter kann eine Verarbeitung personenbezogener Daten in Staaten "
@@ -1320,7 +1339,7 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
             },
             {
                 "id": "speicherung",
-                "eyebrow": "7. Speicherdauer",
+                "eyebrow": "8. Speicherdauer",
                 "title": "Wie lange Daten gespeichert werden",
                 "list_style": "fact",
                 "bullets": [
@@ -1336,7 +1355,7 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
             },
             {
                 "id": "cookies",
-                "eyebrow": "8. Cookies und technische Speicherungen",
+                "eyebrow": "9. Cookies und technische Speicherungen",
                 "title": "Welche lokalen Speicherungen genutzt werden",
                 "paragraphs": [
                     "Die Anwendung verwendet standardmäßig nur technisch erforderliche Cookies, insbesondere für "
@@ -1347,7 +1366,7 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
             },
             {
                 "id": "rechte",
-                "eyebrow": "9. Rechte betroffener Personen",
+                "eyebrow": "10. Rechte betroffener Personen",
                 "title": "Welche Rechte bestehen",
                 "list_style": "fact",
                 "bullets": [
@@ -1361,12 +1380,13 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
                 ],
                 "paragraphs": [
                     "Für Beschwerden kommt insbesondere die zuständige Aufsichtsbehörde am Unternehmenssitz in "
-                    "Nordrhein-Westfalen in Betracht.",
+                    "Nordrhein-Westfalen in Betracht, insbesondere die Landesbeauftragte für Datenschutz und "
+                    "Informationsfreiheit Nordrhein-Westfalen.",
                 ],
             },
             {
                 "id": "pflicht",
-                "eyebrow": "10. Erforderlichkeit der Bereitstellung",
+                "eyebrow": "11. Erforderlichkeit der Bereitstellung",
                 "title": "Ob Daten bereitgestellt werden müssen",
                 "paragraphs": [
                     "Ohne die für Konto, Sicherheit und Kalendersynchronisierung erforderlichen Angaben kann die "
@@ -1377,7 +1397,7 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
             },
             {
                 "id": "automatisierung",
-                "eyebrow": "11. Automatisierte Entscheidungen",
+                "eyebrow": "12. Automatisierte Entscheidungen",
                 "title": "Keine automatisierten Entscheidungen im Sinne von Art. 22 DSGVO",
                 "paragraphs": [
                     "Die Anwendung trifft keine automatisierten Entscheidungen mit rechtlicher oder vergleichbar "
@@ -1388,17 +1408,146 @@ def _privacy_page_content(settings: AppSettings) -> Dict[str, Any]:
             },
             {
                 "id": "hinweise",
-                "eyebrow": "12. Besondere Hinweise",
+                "eyebrow": "13. Besondere Hinweise",
                 "title": "Interner Gebrauch und sensible Daten",
                 "paragraphs": [
-                    "Die Webapp ist für den internen Gebrauch konzipiert. Eine öffentliche Registrierung oder "
+                    f"Die Webapp ist ausschließlich für den internen Gebrauch innerhalb der {settings.legal_business_name} "
+                    "und für ausdrücklich autorisierte Personen vorgesehen. Eine öffentliche Registrierung oder "
                     "offene Nutzung durch unbestimmte Dritte ist nicht vorgesehen.",
                     "Die Anwendung ist nicht speziell für die gezielte Verarbeitung besonderer Kategorien "
                     "personenbezogener Daten im Sinne von Art. 9 DSGVO ausgelegt. Sollten solche Inhalte über "
                     "verbundene Kalender verarbeitet werden, erfolgt dies in der Verantwortung des jeweils "
                     "nutzenden Unternehmens.",
-                    "Stand: 13. März 2026. Dieser Text wurde auf die konkrete App-Funktion zugeschnitten, ersetzt "
-                    "aber keine individuelle rechtliche Beratung.",
+                    "Stand: 13. März 2026.",
+                ],
+            },
+        ],
+    }
+
+
+def _terms_page_content(settings: AppSettings) -> Dict[str, Any]:
+    return {
+        "legal_hero_eyebrow": "Nutzungsbedingungen",
+        "legal_hero_title": "Bedingungen für die interne Nutzung der Kalender-Sync-Webapp",
+        "legal_hero_intro": (
+            f"Diese Nutzungsbedingungen regeln die ausschließlich interne Nutzung der Kalender-Synchronisationsplattform "
+            f"der {settings.legal_business_name}. Die Anwendung ist nicht für eine öffentliche, frei zugängliche oder "
+            "verbraucherbezogene Nutzung bestimmt."
+        ),
+        "legal_badges": ["Ausschließlich interner Gebrauch", "Serverstandort Europa", "Deutscher Rechtsrahmen"],
+        "legal_meta_cards": [
+            {"label": "Betreiber", "value": settings.legal_business_name},
+            {"label": "Geltungsbereich", "value": "Interne Nutzung innerhalb der TB Media UG (haftungsbeschränkt)"},
+            {"label": "Serverstandort", "value": "Europa"},
+            {"label": "Kontakt", "value": settings.legal_email},
+        ],
+        "legal_outline": [
+            {"id": "geltung", "label": "Geltungsbereich"},
+            {"id": "zugang", "label": "Zugang"},
+            {"id": "nutzung", "label": "Zulässige Nutzung"},
+            {"id": "verbindungen", "label": "Kalenderverbindungen"},
+            {"id": "sicherheit", "label": "Sicherheit"},
+            {"id": "verfuegbarkeit", "label": "Verfügbarkeit"},
+            {"id": "datenhaltung", "label": "Datenhaltung"},
+            {"id": "sperrung", "label": "Sperrung"},
+            {"id": "schluss", "label": "Schlussbestimmungen"},
+        ],
+        "legal_sections": [
+            {
+                "id": "geltung",
+                "eyebrow": "1. Geltungsbereich",
+                "title": "Nur für den internen Einsatz",
+                "paragraphs": [
+                    f"Diese Anwendung ist ausschließlich für den internen Gebrauch innerhalb der {settings.legal_business_name} vorgesehen.",
+                    "Eine Nutzung durch die allgemeine Öffentlichkeit, durch unbestimmte Dritte oder als offenes "
+                    "Online-Angebot ist nicht gestattet.",
+                ],
+            },
+            {
+                "id": "zugang",
+                "eyebrow": "2. Zugang und Berechtigungen",
+                "title": "Zugriff nur für autorisierte Personen",
+                "list_style": "fact",
+                "bullets": [
+                    "Zugriffe sind nur mit ausdrücklich freigegebenen Benutzerkonten erlaubt",
+                    "Zugangsdaten und verbundene Provider-Credentials sind vertraulich zu behandeln",
+                    "Weitergabe von Accounts oder Session-Zugängen an unbefugte Dritte ist unzulässig",
+                    "Soweit eingerichtet, ist die Zwei-Faktor-Authentifizierung verbindlich zu verwenden",
+                ],
+            },
+            {
+                "id": "nutzung",
+                "eyebrow": "3. Zulässige Nutzung",
+                "title": "Erlaubter Funktionsumfang",
+                "paragraphs": [
+                    "Die Webapp darf ausschließlich zur internen Kalenderverwaltung, Protokollierung, Sicherung "
+                    "und Synchronisierung dienstlich oder intern freigegebener Termine genutzt werden.",
+                    "Nicht zulässig sind insbesondere missbräuchliche Lasttests, das Umgehen von "
+                    "Sicherheitsmechanismen, die Nutzung für rechtswidrige Inhalte oder die Verarbeitung von "
+                    "Daten ohne ausreichende interne Berechtigung.",
+                ],
+            },
+            {
+                "id": "verbindungen",
+                "eyebrow": "4. Verbundene Kalenderdienste",
+                "title": "Verknüpfungen zu Exchange, iCloud und Google",
+                "paragraphs": [
+                    "Externe Kalender dürfen nur dann verbunden werden, wenn die anlegende Person zur Nutzung "
+                    "und Einbindung des jeweiligen Kontos berechtigt ist.",
+                    "Für die Richtigkeit der hinterlegten Zugangsdaten und die Auswahl des jeweils freigegebenen "
+                    "Kalenders ist die berechtigte nutzende Person verantwortlich.",
+                ],
+            },
+            {
+                "id": "sicherheit",
+                "eyebrow": "5. Sicherheitsanforderungen",
+                "title": "Technische und organisatorische Pflichten",
+                "paragraphs": [
+                    "Bekannte Sicherheitsvorfälle, fehlgeleitete Synchronisationen, Credential-Leaks oder "
+                    "unbefugte Zugriffe sind unverzüglich intern zu melden.",
+                    "Es sind nur die vom Betreiber vorgesehenen Funktionen, Sicherheitsmechanismen und "
+                    "Konfigurationswege zu verwenden.",
+                ],
+            },
+            {
+                "id": "verfuegbarkeit",
+                "eyebrow": "6. Verfügbarkeit und Wartung",
+                "title": "Betriebs- und Wartungshinweise",
+                "paragraphs": [
+                    "Die Anwendung wird nach betrieblichem Bedarf bereitgestellt. Zeitweilige Einschränkungen "
+                    "durch Wartung, Deployments, Sicherheitsmaßnahmen, Provider-Ausfälle oder Infrastrukturarbeiten "
+                    "können auftreten.",
+                    "Ein Anspruch auf unterbrechungsfreien Echtzeitbetrieb besteht nicht.",
+                ],
+            },
+            {
+                "id": "datenhaltung",
+                "eyebrow": "7. Datenhaltung und Serverstandort",
+                "title": "Betrieb nach europäischen Standards",
+                "paragraphs": [
+                    "Der technische Betrieb ist auf Infrastruktur mit Serverstandort in Europa ausgerichtet.",
+                    "Logs, Datenbankinhalte, Sicherungsstände und technische Betriebsdaten werden im Rahmen der "
+                    "eingesetzten Infrastruktur nach europäischen und deutschen Datenschutz- und Sicherheitsstandards verarbeitet.",
+                ],
+            },
+            {
+                "id": "sperrung",
+                "eyebrow": "8. Sperrung und Entzug von Zugängen",
+                "title": "Maßnahmen bei Verstößen oder Risiken",
+                "paragraphs": [
+                    "Bei Sicherheitsrisiken, Verdacht auf Missbrauch, Verstößen gegen diese Nutzungsbedingungen "
+                    "oder dem Wegfall einer Berechtigung können Zugänge ganz oder teilweise gesperrt werden.",
+                    "Dies gilt auch für einzelne Verbindungen, API-Credentials, Backups oder Sync-Funktionen.",
+                ],
+            },
+            {
+                "id": "schluss",
+                "eyebrow": "9. Schlussbestimmungen",
+                "title": "Rechtsrahmen",
+                "paragraphs": [
+                    "Für den Betrieb und die interne Nutzung der Anwendung gilt deutsches Recht, soweit keine "
+                    "zwingenden gesetzlichen Vorschriften entgegenstehen.",
+                    "Maßgeblich ist die jeweils in der Anwendung veröffentlichte Fassung dieser Nutzungsbedingungen.",
                 ],
             },
         ],
