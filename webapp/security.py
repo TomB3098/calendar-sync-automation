@@ -71,6 +71,15 @@ class PendingLoginData:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class OAuthConnectStateData:
+    user_id: int
+    provider: str
+    state_id: str
+    expires_at: datetime
+    payload: Dict[str, Any]
+
+
 def validate_password_policy(password: str) -> Optional[str]:
     if len(password) < 15:
         return "Passwoerter muessen mindestens 15 Zeichen lang sein."
@@ -214,6 +223,73 @@ class PendingLoginManager:
         except ValueError:
             return None
         return PendingLoginData(user_id=user_id, challenge_id=challenge_id, expires_at=expires_at)
+
+
+class OAuthConnectStateManager:
+    def __init__(self, secret_key: str, ttl_minutes: int = 15):
+        self.secret_key = secret_key.encode("utf-8")
+        self.ttl = timedelta(minutes=ttl_minutes)
+        self.purpose = "oauth-connect"
+
+    def _sign(self, payload: str) -> str:
+        return hmac.new(self.secret_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def create(self, user_id: int, provider: str, payload: Dict[str, Any]) -> str:
+        expires_at = iso_z(now_utc() + self.ttl)
+        state_id = secrets.token_urlsafe(18)
+        document = {
+            "purpose": self.purpose,
+            "user_id": int(user_id),
+            "provider": str(provider).strip().lower(),
+            "state_id": state_id,
+            "expires_at": expires_at,
+            "payload": dict(payload or {}),
+        }
+        raw = json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        encoded = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+        signature = self._sign(encoded)
+        return f"{encoded}.{signature}"
+
+    def parse(self, token: Optional[str]) -> Optional[OAuthConnectStateData]:
+        if not token:
+            return None
+        try:
+            encoded, signature = str(token).split(".", 1)
+        except ValueError:
+            return None
+        if not hmac.compare_digest(signature, self._sign(encoded)):
+            return None
+        padded = encoded + "=" * (-len(encoded) % 4)
+        try:
+            raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+            document = json.loads(raw)
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error):
+            return None
+        if not isinstance(document, dict):
+            return None
+        if str(document.get("purpose") or "") != self.purpose:
+            return None
+        expires_at = parse_utc(str(document.get("expires_at") or ""))
+        if not expires_at or expires_at < now_utc():
+            return None
+        payload = document.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            user_id = int(document.get("user_id"))
+        except (TypeError, ValueError):
+            return None
+        provider = str(document.get("provider") or "").strip().lower()
+        state_id = str(document.get("state_id") or "").strip()
+        if not provider or not state_id:
+            return None
+        return OAuthConnectStateData(
+            user_id=user_id,
+            provider=provider,
+            state_id=state_id,
+            expires_at=expires_at,
+            payload=dict(payload),
+        )
 
 
 class CsrfManager:

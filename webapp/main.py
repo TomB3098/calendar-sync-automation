@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
+import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +38,7 @@ from .security import (
     CsrfManager,
     PendingLoginData,
     PendingLoginManager,
+    OAuthConnectStateManager,
     PasswordHasher,
     SecretBox,
     SessionData,
@@ -58,6 +60,9 @@ VALID_PROVIDERS = {"google", "exchange", "icloud"}
 CONNECTION_PROFILE_KIND = "aether-calendar-connection-profile"
 CONNECTION_PROFILE_VERSION = 1
 PENDING_LOGIN_COOKIE_NAME = "aether_pending_2fa"
+GOOGLE_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+GOOGLE_OAUTH_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 LOG_SORT_OPTIONS = (
     ("newest", "Neueste zuerst"),
     ("oldest", "Älteste zuerst"),
@@ -159,6 +164,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     passwords = PasswordHasher()
     sessions = SessionManager(settings.app_secret, settings.session_ttl_hours)
     pending_logins = PendingLoginManager(settings.app_secret, ttl_minutes=10)
+    oauth_connect_states = OAuthConnectStateManager(settings.app_secret, ttl_minutes=15)
     csrf = CsrfManager(settings.app_secret, settings.session_ttl_hours)
     totp = TotpManager()
     sync_service = SyncService(repository, settings)
@@ -187,6 +193,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     app.state.passwords = passwords
     app.state.sessions = sessions
     app.state.pending_logins = pending_logins
+    app.state.oauth_connect_states = oauth_connect_states
     app.state.csrf = csrf
     app.state.totp = totp
     app.state.sync_service = sync_service
@@ -530,6 +537,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 "page_notice": _page_notice(request),
                 "selected_provider": selected_provider,
                 "provider_options": _connection_provider_options(selected_provider),
+                "google_oauth_available": bool(settings.google_oauth_client_id and settings.google_oauth_client_secret),
             }
         )
         return _render_template(request, settings, csrf, "connections.html", context)
@@ -548,6 +556,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if provider not in VALID_PROVIDERS or not display_name or len(display_name) > 120:
             return _redirect(_connections_page_url(provider=provider, error="validation"))
         settings_payload = _extract_connection_settings(form)
+        if not _has_required_connection_settings(provider, settings_payload):
+            return _redirect(_connections_page_url(provider=provider, error="validation"))
         repository.create_connection(
             int(user["id"]),
             provider=provider,
@@ -557,6 +567,96 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             settings=settings_payload,
         )
         return _redirect(_connections_page_url(provider=provider, notice="saved"))
+
+    @app.post("/app/connections/google/connect")
+    async def connect_google_connection(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect(_connections_page_url(provider="google", error="security"))
+        if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
+            return _redirect(_connections_page_url(provider="google", error="google-config"))
+        display_name = str(form.get("display_name") or "").strip()
+        blocked_title = str(form.get("blocked_title") or "Blocked").strip() or "Blocked"
+        timeout_sec = str(form.get("timeout_sec") or settings.provider_timeout_sec).strip() or str(settings.provider_timeout_sec)
+        google_calendar_id = str(form.get("google_calendar_id") or "primary").strip() or "primary"
+        if not display_name or len(display_name) > 120:
+            return _redirect(_connections_page_url(provider="google", error="validation"))
+        state_payload = {
+            "display_name": display_name,
+            "blocked_title": blocked_title,
+            "timeout_sec": timeout_sec,
+            "google_calendar_id": google_calendar_id,
+        }
+        state = oauth_connect_states.create(int(user["id"]), "google", state_payload)
+        authorize_params = {
+            "client_id": settings.google_oauth_client_id,
+            "redirect_uri": _google_redirect_uri(request, settings),
+            "response_type": "code",
+            "scope": GOOGLE_OAUTH_SCOPE,
+            "access_type": "offline",
+            "include_granted_scopes": "true",
+            "prompt": "consent",
+            "state": state,
+        }
+        return _redirect(f"{GOOGLE_OAUTH_AUTHORIZE_URL}?{urlencode(authorize_params)}")
+
+    @app.get("/app/connections/google/callback")
+    async def google_connection_callback(request: Request) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/login")
+        state_token = str(request.query_params.get("state") or "")
+        state = oauth_connect_states.parse(state_token)
+        if not state or state.provider != "google" or int(user["id"]) != state.user_id:
+            return _redirect(_connections_page_url(provider="google", error="google-auth", detail="invalid-state"))
+        if str(request.query_params.get("error") or "").strip():
+            error_reason = str(request.query_params.get("error_description") or request.query_params.get("error") or "").strip()
+            return _redirect(_connections_page_url(provider="google", error="google-auth", detail=error_reason))
+        code = str(request.query_params.get("code") or "").strip()
+        if not code:
+            return _redirect(_connections_page_url(provider="google", error="google-auth", detail="missing-code"))
+        try:
+            token_payload = _exchange_google_authorization_code(code, request, settings)
+        except RuntimeError as exc:
+            return _redirect(_connections_page_url(provider="google", error="google-auth", detail=str(exc)))
+        refresh_token = str(token_payload.get("refresh_token") or "").strip()
+        if not refresh_token:
+            return _redirect(_connections_page_url(provider="google", error="google-auth", detail="missing-refresh-token"))
+        connection_settings = {
+            "timeout_sec": str(state.payload.get("timeout_sec") or settings.provider_timeout_sec),
+            "google_calendar_id": str(state.payload.get("google_calendar_id") or "primary"),
+            "google_oauth_client_id": settings.google_oauth_client_id,
+            "google_oauth_client_secret": settings.google_oauth_client_secret,
+            "google_oauth_refresh_token": refresh_token,
+        }
+        existing = repository.find_connection_by_provider_and_name(
+            int(user["id"]),
+            "google",
+            str(state.payload.get("display_name") or ""),
+        )
+        if existing:
+            repository.update_connection(
+                int(user["id"]),
+                int(existing["id"]),
+                display_name=str(state.payload.get("display_name") or ""),
+                sync_mode=_default_sync_mode_for_provider("google"),
+                blocked_title=str(state.payload.get("blocked_title") or "Blocked"),
+                settings=connection_settings,
+                is_active=True,
+            )
+        else:
+            repository.create_connection(
+                int(user["id"]),
+                provider="google",
+                display_name=str(state.payload.get("display_name") or ""),
+                sync_mode=_default_sync_mode_for_provider("google"),
+                blocked_title=str(state.payload.get("blocked_title") or "Blocked"),
+                settings=connection_settings,
+            )
+        return _redirect(_connections_page_url(provider="google", notice="google-connected"))
 
     @app.post("/app/connections/import")
     async def import_connections(request: Request) -> RedirectResponse:
@@ -1610,8 +1710,11 @@ def _login_rate_limited(repository: AppRepository, settings: AppSettings, email:
 def _page_notice(request: Request) -> Optional[str]:
     error = str(request.query_params.get("error") or "").strip().lower()
     notice = str(request.query_params.get("notice") or "").strip().lower()
+    detail = str(request.query_params.get("detail") or "").strip()
     if notice == "saved":
         return "Änderung gespeichert."
+    if notice == "google-connected":
+        return "Google-Verknüpfung erfolgreich verbunden."
     if notice == "autosync-updated":
         return "Auto-Sync-Intervall gespeichert."
     if notice == "two-factor-setup-started":
@@ -1651,6 +1754,12 @@ def _page_notice(request: Request) -> Optional[str]:
         return "Für die Wiederherstellung ist das aktuelle Passwort erforderlich."
     if error == "backup-running":
         return "Während einer laufenden Synchronisierung kann kein Backup eingespielt werden."
+    if error == "google-config":
+        return "Google OAuth ist für die Webapp noch nicht konfiguriert."
+    if error == "google-auth":
+        if detail:
+            return f"Google-Verbindung fehlgeschlagen: {detail}"
+        return "Google-Verbindung fehlgeschlagen."
     return None
 
 
@@ -1659,6 +1768,7 @@ def _connections_page_url(
     provider: Optional[str] = None,
     notice: Optional[str] = None,
     error: Optional[str] = None,
+    detail: Optional[str] = None,
     created: Optional[int] = None,
     updated: Optional[int] = None,
 ) -> str:
@@ -1670,6 +1780,8 @@ def _connections_page_url(
         query["notice"] = notice
     if error:
         query["error"] = error
+    if detail:
+        query["detail"] = str(detail).strip()[:220]
     if created is not None:
         query["created"] = int(created)
     if updated is not None:
@@ -1691,6 +1803,63 @@ def _log_entry_has_error(entry: Dict[str, Any]) -> bool:
     if str(payload.get("error") or "").strip():
         return True
     return str(entry.get("level") or "").strip().lower() == "error"
+
+
+def _has_required_connection_settings(provider: str, settings_payload: Dict[str, Any]) -> bool:
+    if provider == "exchange":
+        return all(
+            settings_payload.get(key)
+            for key in ["exchange_tenant_id", "exchange_client_id", "exchange_client_secret", "exchange_user"]
+        )
+    if provider == "icloud":
+        return all(settings_payload.get(key) for key in ["icloud_user", "icloud_app_pw", "icloud_principal_path"])
+    if provider == "google":
+        oauth_ready = all(
+            settings_payload.get(key)
+            for key in ["google_oauth_client_id", "google_oauth_client_secret", "google_oauth_refresh_token"]
+        )
+        service_ready = bool(settings_payload.get("google_service_account_json"))
+        return oauth_ready or service_ready
+    return False
+
+
+def _public_base_url(request: Request, settings: AppSettings) -> str:
+    configured = str(settings.public_base_url or "").strip().rstrip("/")
+    if configured:
+        return configured
+    return str(request.base_url).rstrip("/")
+
+
+def _google_redirect_uri(request: Request, settings: AppSettings) -> str:
+    return f"{_public_base_url(request, settings)}/app/connections/google/callback"
+
+
+def _exchange_google_authorization_code(code: str, request: Request, settings: AppSettings) -> Dict[str, Any]:
+    response = requests.post(
+        GOOGLE_OAUTH_TOKEN_URL,
+        data={
+            "code": code,
+            "client_id": settings.google_oauth_client_id,
+            "client_secret": settings.google_oauth_client_secret,
+            "redirect_uri": _google_redirect_uri(request, settings),
+            "grant_type": "authorization_code",
+        },
+        timeout=settings.provider_timeout_sec,
+    )
+    payload: Dict[str, Any]
+    try:
+        payload = dict(response.json())
+    except Exception:
+        payload = {}
+    if response.status_code >= 400:
+        error = str(payload.get("error") or "").strip()
+        description = str(payload.get("error_description") or "").strip()
+        if error and description:
+            raise RuntimeError(f"{error}: {description}")
+        if error:
+            raise RuntimeError(error)
+        raise RuntimeError((response.text or "").strip() or f"HTTP {response.status_code}")
+    return payload
 
 
 def _login_error_message(request: Request) -> Optional[str]:

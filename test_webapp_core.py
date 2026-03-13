@@ -5,6 +5,8 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
+from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 from sync_exchange_icloud_calendar import SyncEvent
 from webapp.config import AppSettings
@@ -108,6 +110,7 @@ class WebappCoreTests(unittest.TestCase):
     def make_settings(self, database_path: Path | None = None, **overrides: Any) -> AppSettings:
         data = {
             "app_name": "Test Calendar Console",
+            "public_base_url": "",
             "database_path": database_path or self.database.path,
             "backup_directory": (database_path or self.database.path).parent / "backups",
             "legal_brand_name": "Webdesign Becker",
@@ -120,6 +123,8 @@ class WebappCoreTests(unittest.TestCase):
             "legal_whatsapp": "01525 8530929",
             "legal_vat_id": "DE366883061",
             "legal_website_url": "https://webdesign-becker.de",
+            "google_oauth_client_id": "",
+            "google_oauth_client_secret": "",
             "app_secret": "test-secret-value",
             "data_encryption_key": TEST_DATA_KEY,
             "session_cookie_name": "test_session",
@@ -1364,6 +1369,83 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("https://oauth2.googleapis.com/token", response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_google_connect_workflow_creates_connection(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-google-connect.sqlite3"
+        settings = self.make_settings(
+            database_path=database_path,
+            auto_sync_worker_enabled=False,
+            google_oauth_client_id="google-client-id",
+            google_oauth_client_secret="google-client-secret",
+            public_base_url="https://calendar.example.com",
+            allowed_hosts=("127.0.0.1", "localhost", "::1", "testserver", "calendar.example.com"),
+        )
+        client = TestClient(create_app(settings), base_url="https://calendar.example.com")
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        connect_response = client.post(
+            "/app/connections/google/connect",
+            data={
+                "_csrf": self.csrf_token(client),
+                "provider": "google",
+                "display_name": "Google Primary",
+                "blocked_title": "Blocked",
+                "timeout_sec": "45",
+                "google_calendar_id": "primary",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(connect_response.status_code, 303)
+        location = connect_response.headers["location"]
+        self.assertIn("accounts.google.com/o/oauth2/v2/auth", location)
+        query = parse_qs(urlparse(location).query)
+        self.assertEqual(query["client_id"][0], "google-client-id")
+        self.assertEqual(query["scope"][0], "https://www.googleapis.com/auth/calendar.events")
+        self.assertEqual(query["redirect_uri"][0], "https://calendar.example.com/app/connections/google/callback")
+        state = query["state"][0]
+
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token-value",
+            "scope": "https://www.googleapis.com/auth/calendar.events",
+            "token_type": "Bearer",
+        }
+        with mock.patch("webapp.main.requests.post", return_value=mock_response) as mocked_post:
+            callback_response = client.get(
+                f"/app/connections/google/callback?state={state}&code=oauth-code-value",
+                follow_redirects=False,
+            )
+        self.assertEqual(callback_response.status_code, 303)
+        self.assertEqual(callback_response.headers["location"], "/app/connections?provider=google&notice=google-connected")
+        mocked_post.assert_called_once()
+        posted_data = mocked_post.call_args.kwargs["data"]
+        self.assertEqual(posted_data["client_id"], "google-client-id")
+        self.assertEqual(posted_data["client_secret"], "google-client-secret")
+        self.assertEqual(posted_data["redirect_uri"], "https://calendar.example.com/app/connections/google/callback")
+
+        repository = AppRepository(Database(database_path), SecretBox(TEST_DATA_KEY))
+        user = repository.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        connection = repository.find_connection_by_provider_and_name(int(user["id"]), "google", "Google Primary")
+        self.assertIsNotNone(connection)
+        assert connection is not None
+        self.assertEqual(connection["settings"]["google_oauth_refresh_token"], "refresh-token-value")
+        self.assertEqual(connection["settings"]["google_oauth_client_id"], "google-client-id")
+        self.assertEqual(connection["settings"]["timeout_sec"], "45")
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_connections_form_tracks_selected_provider(self) -> None:
         database_path = Path(tempfile.mkdtemp()) / "http-connections-provider.sqlite3"
         settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
@@ -1395,7 +1477,8 @@ class WebappCoreTests(unittest.TestCase):
 
         google_response = client.get("/app/connections?provider=google")
         self.assertEqual(google_response.status_code, 200)
-        self.assertIn("OAuth Refresh Token", google_response.text)
+        self.assertIn("Connect with Google", google_response.text)
+        self.assertIn("Mit Google verbinden", google_response.text)
         self.assertNotIn("Tenant ID", google_response.text)
         self.assertNotIn("iCloud User", google_response.text)
 
