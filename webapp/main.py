@@ -1131,6 +1131,7 @@ def _base_context(request: Request, settings: AppSettings, user: Dict[str, Any],
         "request": request,
         "title": title,
         "app_name": settings.app_name,
+        "asset_version": _static_asset_version(),
         "user": user,
         "now": now_utc(),
         **_legal_context(settings),
@@ -1147,6 +1148,7 @@ def _public_context(
         "request": request,
         "title": title,
         "app_name": settings.app_name,
+        "asset_version": _static_asset_version(),
         "user": user,
         "now": now_utc(),
         **_legal_context(settings),
@@ -1166,6 +1168,13 @@ def _legal_context(settings: AppSettings) -> Dict[str, Any]:
         "legal_vat_id": settings.legal_vat_id,
         "legal_website_url": settings.legal_website_url,
     }
+
+
+def _static_asset_version() -> str:
+    try:
+        return str(int((BASE_DIR / "static" / "app.css").stat().st_mtime))
+    except OSError:
+        return "1"
 
 
 def _imprint_page_content(settings: AppSettings) -> Dict[str, Any]:

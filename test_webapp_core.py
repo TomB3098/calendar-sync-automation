@@ -1235,6 +1235,7 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("Interner Hauptkalender", response.text)
         self.assertIn("Master-Ereignisse", response.text)
         self.assertIn("Provider-Spiegel", response.text)
+        self.assertIn("/static/app.css?v=", response.text)
         self.assertEqual(response.headers.get("content-security-policy"), "default-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 
         response = client.post(

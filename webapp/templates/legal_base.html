@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v={{ asset_version }}" />
   </head>
   <body class="auth-body">
     <div class="public-shell">
