@@ -1060,7 +1060,7 @@ def _apply_security_headers(response: Response, request: Request, settings: AppS
         "font-src 'self' https://fonts.gstatic.com data:",
         "object-src 'none'",
         "base-uri 'self'",
-        "form-action 'self'",
+        "form-action 'self' https://accounts.google.com",
         "frame-ancestors 'none'",
     ]
     if settings.force_https:
