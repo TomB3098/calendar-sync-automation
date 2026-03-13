@@ -19,6 +19,14 @@ def _env_csv(name: str, default: str) -> Tuple[str, ...]:
     return tuple(item for item in parts if item)
 
 
+def _env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        raw = os.getenv(name)
+        if raw is not None and raw.strip():
+            return raw.strip()
+    return default
+
+
 @dataclass(frozen=True)
 class AppSettings:
     app_name: str
@@ -67,7 +75,7 @@ class AppSettings:
         backup_directory = Path(os.getenv("CAL_WEBAPP_BACKUP_DIR", str(database_path.parent / "backups")))
         return cls(
             app_name=os.getenv("CAL_WEBAPP_NAME", "Aether Calendar Console"),
-            public_base_url=os.getenv("CAL_WEBAPP_PUBLIC_BASE_URL", "").strip().rstrip("/"),
+            public_base_url=_env_first("CAL_WEBAPP_PUBLIC_BASE_URL", default="").rstrip("/"),
             database_path=database_path,
             backup_directory=backup_directory,
             legal_brand_name=os.getenv("CAL_WEBAPP_LEGAL_BRAND_NAME", "Webdesign Becker"),
@@ -80,8 +88,8 @@ class AppSettings:
             legal_whatsapp=os.getenv("CAL_WEBAPP_LEGAL_WHATSAPP", "01525 8530929"),
             legal_vat_id=os.getenv("CAL_WEBAPP_LEGAL_VAT_ID", "DE366883061"),
             legal_website_url=os.getenv("CAL_WEBAPP_LEGAL_WEBSITE_URL", "https://webdesign-becker.de"),
-            google_oauth_client_id=os.getenv("CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_ID", "").strip(),
-            google_oauth_client_secret=os.getenv("CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
+            google_oauth_client_id=_env_first("CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_ID", default=""),
+            google_oauth_client_secret=_env_first("CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_SECRET", default=""),
             app_secret=os.getenv("CAL_WEBAPP_SECRET", ""),
             data_encryption_key=os.getenv("CAL_WEBAPP_DATA_KEY", ""),
             session_cookie_name=os.getenv("CAL_WEBAPP_SESSION_COOKIE", "aether_session"),
