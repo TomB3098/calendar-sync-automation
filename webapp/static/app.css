@@ -659,6 +659,77 @@ button.danger {
   min-width: 0;
 }
 
+.provider-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.provider-choice {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 1rem 1.05rem;
+  border-radius: 22px;
+  border: 1px solid rgb(154 167 181 / 20%);
+  background: linear-gradient(180deg, rgb(255 255 255 / 72%) 0%, rgb(255 255 255 / 42%) 100%);
+  color: var(--color-surface-dark-1);
+  text-decoration: none;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
+}
+
+.provider-choice:hover,
+.provider-choice.selected {
+  transform: translateY(-3px);
+  border-color: rgb(67 169 209 / 34%);
+  box-shadow:
+    0 22px 50px -28px rgb(67 169 209 / 26%),
+    inset 0 1px 0 rgb(255 255 255 / 92%);
+}
+
+.provider-choice.selected {
+  background: linear-gradient(180deg, rgb(67 169 209 / 12%) 0%, rgb(255 255 255 / 62%) 100%);
+}
+
+.provider-choice-title {
+  font-family: "Poppins", "Segoe UI", sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.provider-choice-copy {
+  color: var(--color-text-muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.form-section {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+  padding: 1rem 1.05rem;
+  border-radius: 24px;
+  border: 1px solid rgb(154 167 181 / 18%);
+  background: linear-gradient(180deg, rgb(255 255 255 / 62%) 0%, rgb(255 255 255 / 38%) 100%);
+}
+
+.form-section h4 {
+  margin-top: 0.15rem;
+}
+
+.section-kicker {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
 .stack {
   display: grid;
   gap: 1rem;
@@ -782,7 +853,8 @@ tbody tr:hover td {
 .connection-list,
 .backup-list,
 .status-check-list,
-.log-stream {
+.log-stream,
+.dashboard-error-list {
   display: grid;
   gap: 0.95rem;
 }
@@ -796,7 +868,8 @@ tbody tr:hover td {
 .event-card,
 .backup-card,
 .connection-card,
-.log-line {
+.log-line,
+.dashboard-error-card {
   padding: 1.05rem;
 }
 
@@ -925,6 +998,17 @@ pre,
   margin: 0.7rem 0 0;
   color: var(--color-surface-dark-1);
   font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.dashboard-error-card {
+  border: 1px solid rgb(252 67 73 / 16%);
+  background: linear-gradient(180deg, rgb(255 255 255 / 72%) 0%, rgb(252 67 73 / 6%) 100%);
+}
+
+.dashboard-error-text {
+  margin: 0.35rem 0 0;
+  color: #8a2233;
   font-weight: 700;
 }
 
@@ -1606,6 +1690,10 @@ pre,
   .legal-summary {
     grid-template-columns: 1fr;
   }
+
+  .provider-picker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -1636,6 +1724,10 @@ pre,
   .hero.compact h2 {
     max-width: none;
     font-size: clamp(2rem, 10vw, 2.8rem);
+  }
+
+  .provider-picker {
+    grid-template-columns: 1fr;
   }
 
   .hero.hero-dashboard h2 {

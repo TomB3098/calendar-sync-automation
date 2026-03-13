@@ -56,6 +56,47 @@
 
 <section class="panel">
   <div class="panel-head">
+    <div>
+      <h3>Letzte Fehler</h3>
+      <p class="meta-line">
+        {% if dashboard_error_count %}
+        {{ dashboard_error_count }} Fehler mit auslesbaren Details im jüngsten Logfenster.
+        {% else %}
+        Aktuell liegen keine Fehler mit Detaildaten in den letzten Synchronisationslogs vor.
+        {% endif %}
+      </p>
+    </div>
+    <a href="/app/logs?sort=severity">Fehler-Logs öffnen</a>
+  </div>
+  {% if dashboard_errors %}
+  <div class="dashboard-error-list">
+    {% for entry in dashboard_errors %}
+    <article class="dashboard-error-card">
+      <div class="log-head">
+        <div>
+          <div class="log-meta">{{ entry.created_at }}{% if entry.triggered_by %} · {{ entry.triggered_by }}{% endif %}</div>
+          <strong>{{ entry.message }}</strong>
+        </div>
+        <div class="log-tags">
+          <span class="status-pill log-pill log-pill-{{ entry.level_slug }}">{{ entry.level_slug }}</span>
+          <span class="status-pill log-pill log-pill-info">{{ entry.provider_label }}</span>
+          <span class="status-pill log-pill log-pill-info">{{ entry.action_label }}</span>
+        </div>
+      </div>
+      {% if entry.has_sync_id %}<p class="meta-line">Sync-ID: {{ entry.sync_id }}</p>{% endif %}
+      {% if entry.detail_line %}<p>{{ entry.detail_line }}</p>{% endif %}
+      {% if entry.error_text %}<p class="dashboard-error-text">{{ entry.error_text }}</p>{% endif %}
+      {% if entry.payload_preview %}<pre class="log-payload">{{ entry.payload_preview }}</pre>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="meta-line">Keine Fehler anzuzeigen.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h3>Letzte Sync-Jobs</h3>
     <a href="/app/logs">Alle Logs</a>
   </div>

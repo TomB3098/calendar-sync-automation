@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -63,6 +64,23 @@ LOG_SORT_OPTIONS = (
     ("provider", "Nach Provider"),
     ("action", "Nach Aktion"),
     ("severity", "Fehler zuerst"),
+)
+CONNECTION_PROVIDER_OPTIONS = (
+    {
+        "slug": "exchange",
+        "label": "Exchange",
+        "description": "Microsoft 365 oder Outlook per Graph-App und Mailbox-Zugriff anbinden.",
+    },
+    {
+        "slug": "icloud",
+        "label": "iCloud",
+        "description": "Apple Kalender per CalDAV mit App-spezifischem Passwort verbinden.",
+    },
+    {
+        "slug": "google",
+        "label": "Google",
+        "description": "Google Calendar per OAuth-Refresh-Token oder Service-Account konfigurieren.",
+    },
 )
 KNOWN_CONNECTION_SETTING_FIELDS = [
     "timeout_sec",
@@ -398,6 +416,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         archived_event_count = max(0, total_event_count - active_event_count)
         provider_link_count = repository.count_event_links(int(user["id"]))
         jobs = repository.list_sync_jobs(int(user["id"]), 8)
+        raw_dashboard_errors = repository.list_sync_log_entries(int(user["id"]), 120)
+        dashboard_errors = [
+            _log_entry_for_template(entry) for entry in raw_dashboard_errors if _log_entry_has_error(entry)
+        ]
         running_job = repository.get_running_sync_job(int(user["id"]))
         context = _base_context(request, settings, user, "Dashboard")
         context.update(
@@ -409,6 +431,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 "provider_link_count": provider_link_count,
                 "job_count": repository.count_sync_jobs(int(user["id"])),
                 "jobs": jobs,
+                "dashboard_errors": dashboard_errors[:6],
+                "dashboard_error_count": len(dashboard_errors),
                 "running_job": running_job,
                 "auto_sync_interval_minutes": int(user.get("auto_sync_interval_minutes") or 0),
                 "auto_sync_status": _auto_sync_status(user),
@@ -498,8 +522,16 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not user:
             return _redirect("/setup" if repository.count_users() == 0 else "/login")
         connections = [_connection_for_template(connection) for connection in repository.list_connections(int(user["id"]))]
+        selected_provider = _selected_connection_provider(str(request.query_params.get("provider") or ""))
         context = _base_context(request, settings, user, "Verbindungen")
-        context.update({"connections": connections, "page_notice": _page_notice(request)})
+        context.update(
+            {
+                "connections": connections,
+                "page_notice": _page_notice(request),
+                "selected_provider": selected_provider,
+                "provider_options": _connection_provider_options(selected_provider),
+            }
+        )
         return _render_template(request, settings, csrf, "connections.html", context)
 
     @app.post("/app/connections")
@@ -514,7 +546,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         display_name = str(form.get("display_name") or "").strip()
         blocked_title = str(form.get("blocked_title") or "Blocked").strip() or "Blocked"
         if provider not in VALID_PROVIDERS or not display_name or len(display_name) > 120:
-            return _redirect("/app/connections?error=validation")
+            return _redirect(_connections_page_url(provider=provider, error="validation"))
         settings_payload = _extract_connection_settings(form)
         repository.create_connection(
             int(user["id"]),
@@ -524,7 +556,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             blocked_title=blocked_title,
             settings=settings_payload,
         )
-        return _redirect("/app/connections?notice=saved")
+        return _redirect(_connections_page_url(provider=provider, notice="saved"))
 
     @app.post("/app/connections/import")
     async def import_connections(request: Request) -> RedirectResponse:
@@ -1611,6 +1643,45 @@ def _page_notice(request: Request) -> Optional[str]:
     if error == "backup-running":
         return "Während einer laufenden Synchronisierung kann kein Backup eingespielt werden."
     return None
+
+
+def _connections_page_url(
+    *,
+    provider: Optional[str] = None,
+    notice: Optional[str] = None,
+    error: Optional[str] = None,
+    created: Optional[int] = None,
+    updated: Optional[int] = None,
+) -> str:
+    query: Dict[str, Any] = {}
+    normalized_provider = _selected_connection_provider(provider)
+    if provider and normalized_provider in VALID_PROVIDERS:
+        query["provider"] = normalized_provider
+    if notice:
+        query["notice"] = notice
+    if error:
+        query["error"] = error
+    if created is not None:
+        query["created"] = int(created)
+    if updated is not None:
+        query["updated"] = int(updated)
+    return f"/app/connections?{urlencode(query)}" if query else "/app/connections"
+
+
+def _selected_connection_provider(raw_provider: Optional[str]) -> str:
+    provider = str(raw_provider or "").strip().lower()
+    return provider if provider in VALID_PROVIDERS else "exchange"
+
+
+def _connection_provider_options(selected_provider: str) -> List[Dict[str, Any]]:
+    return [{**option, "selected": option["slug"] == selected_provider} for option in CONNECTION_PROVIDER_OPTIONS]
+
+
+def _log_entry_has_error(entry: Dict[str, Any]) -> bool:
+    payload = dict(entry.get("payload") or {})
+    if str(payload.get("error") or "").strip():
+        return True
+    return str(entry.get("level") or "").strip().lower() == "error"
 
 
 def _login_error_message(request: Request) -> Optional[str]:

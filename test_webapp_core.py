@@ -1318,6 +1318,87 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("alle 15 Minuten", response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_dashboard_shows_recent_error_details(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-dashboard-errors.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        repository = AppRepository(Database(database_path), SecretBox(TEST_DATA_KEY))
+        user = repository.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        job = repository.create_sync_job(int(user["id"]), "owner@example.com", "Sync failed", status="failed")
+        repository.add_sync_log(
+            int(job["id"]),
+            level="error",
+            provider="google",
+            action="provider_fetch_failed",
+            sync_id="sync-google-error",
+            message="provider_fetch_failed",
+            payload={
+                "detail": "Token-Refresh gegen Google ist fehlgeschlagen.",
+                "error": "400 Client Error: invalid_grant",
+                "endpoint": "https://oauth2.googleapis.com/token",
+                "response": {"error": "invalid_grant"},
+            },
+        )
+
+        response = client.get("/app/dashboard")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Letzte Fehler", response.text)
+        self.assertIn("provider_fetch_failed", response.text)
+        self.assertIn("Token-Refresh gegen Google ist fehlgeschlagen.", response.text)
+        self.assertIn("400 Client Error: invalid_grant", response.text)
+        self.assertIn("https://oauth2.googleapis.com/token", response.text)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_connections_form_tracks_selected_provider(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-connections-provider.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        exchange_response = client.get("/app/connections?provider=exchange")
+        self.assertEqual(exchange_response.status_code, 200)
+        self.assertIn("Schritt 1: Provider wählen.", exchange_response.text)
+        self.assertIn("Tenant ID", exchange_response.text)
+        self.assertNotIn("iCloud User", exchange_response.text)
+        self.assertNotIn("OAuth Refresh Token", exchange_response.text)
+
+        icloud_response = client.get("/app/connections?provider=icloud")
+        self.assertEqual(icloud_response.status_code, 200)
+        self.assertIn("iCloud User", icloud_response.text)
+        self.assertNotIn("Tenant ID", icloud_response.text)
+        self.assertNotIn("OAuth Refresh Token", icloud_response.text)
+
+        google_response = client.get("/app/connections?provider=google")
+        self.assertEqual(google_response.status_code, 200)
+        self.assertIn("OAuth Refresh Token", google_response.text)
+        self.assertNotIn("Tenant ID", google_response.text)
+        self.assertNotIn("iCloud User", google_response.text)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_logout_clears_secure_host_session_cookie(self) -> None:
         database_path = Path(tempfile.mkdtemp()) / "http-logout.sqlite3"
         settings = self.make_settings(
