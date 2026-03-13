@@ -1192,16 +1192,61 @@ pre,
   z-index: 1;
   display: grid;
   gap: 1rem;
-  width: min(1120px, 100%);
+  width: min(1240px, 100%);
 }
 
-.public-header,
+.public-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem 1.4rem;
+  align-items: end;
+  padding: 1.25rem 1.4rem 1.35rem;
+  border: 1px solid var(--color-glass-border);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 14% 18%, rgb(67 169 209 / 28%) 0%, transparent 34%),
+    radial-gradient(circle at 88% 14%, rgb(252 67 73 / 18%) 0%, transparent 28%),
+    linear-gradient(135deg, rgb(42 68 92 / 98%) 0%, rgb(35 57 77 / 96%) 46%, rgb(46 58 82 / 96%) 100%);
+  box-shadow:
+    var(--shadow-dark),
+    inset 0 1px 0 rgb(255 255 255 / 12%);
+  overflow: hidden;
+}
+
+.public-header::before {
+  content: "";
+  position: absolute;
+  inset: auto -6rem -5rem auto;
+  width: 18rem;
+  height: 18rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(255 255 255 / 12%) 0%, transparent 68%);
+  filter: blur(20px);
+  pointer-events: none;
+}
+
+.public-header::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  border: 1px solid rgb(255 255 255 / 10%);
+  pointer-events: none;
+}
+
+.public-header > * {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
 .public-footer {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  align-items: flex-start;
-  padding: 1.4rem 1.5rem;
+  align-items: center;
+  padding: 1.2rem 1.35rem;
   border: 1px solid var(--color-glass-border);
   border-radius: 28px;
   background:
@@ -1215,17 +1260,37 @@ pre,
 }
 
 .public-header h1 {
-  margin: 0.35rem 0 0.25rem;
+  margin: 0.3rem 0 0.2rem;
   font-family: "Poppins", "Segoe UI", sans-serif;
-  font-size: clamp(2rem, 4vw, 3rem);
-  line-height: 1.08;
-  color: var(--color-surface-dark-1);
+  font-size: clamp(1.7rem, 3vw, 2.25rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: rgb(255 255 255 / 96%);
+  text-wrap: balance;
 }
 
-.public-header p,
-.public-footer {
+.public-header p {
   margin: 0;
-  color: var(--color-text);
+  max-width: 44ch;
+  color: rgb(235 242 247 / 78%);
+}
+
+.public-header .brand-kicker {
+  color: rgb(255 255 255 / 58%);
+}
+
+.public-header .ghost-link {
+  background: rgb(255 255 255 / 10%);
+  border-color: rgb(255 255 255 / 18%);
+  color: var(--color-white);
+  box-shadow: none;
+}
+
+.public-header .ghost-link:hover {
+  background: rgb(255 255 255 / 16%);
+  border-color: rgb(255 255 255 / 28%);
+  color: var(--color-white);
+  box-shadow: 0 14px 30px -22px rgb(0 0 0 / 28%);
 }
 
 .public-main {
@@ -1236,11 +1301,9 @@ pre,
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
+  justify-self: end;
   justify-content: flex-end;
-}
-
-.public-footer {
-  align-items: center;
+  align-self: start;
 }
 
 .public-footer-block {
@@ -1607,12 +1670,14 @@ pre,
 
   .public-header,
   .public-footer {
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr;
     align-items: stretch;
   }
 
   .public-actions {
-    justify-content: stretch;
+    justify-self: start;
+    justify-content: flex-start;
   }
 }
 
