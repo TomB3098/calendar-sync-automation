@@ -165,6 +165,10 @@
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <button type="submit">{{ "Pausieren" if connection.is_active else "Aktivieren" }}</button>
         </form>
+        <form method="post" action="/app/connections/{{ connection.id }}/delete">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button class="danger" type="submit">Profil löschen</button>
+        </form>
       </div>
     </article>
     {% else %}

@@ -758,6 +758,20 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         repository.toggle_connection(int(user["id"]), connection_id)
         return _redirect("/app/connections?notice=updated")
 
+    @app.post("/app/connections/{connection_id}/delete")
+    async def delete_connection(request: Request, connection_id: int) -> RedirectResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return _redirect("/setup" if repository.count_users() == 0 else "/login")
+        form = await _validated_form(request, csrf, settings)
+        if form is None:
+            return _redirect("/app/connections?error=security")
+        connection = repository.get_connection(int(user["id"]), connection_id)
+        if not connection:
+            return _redirect("/app/connections?error=validation")
+        repository.delete_connection(int(user["id"]), connection_id)
+        return _redirect(_connections_page_url(provider=str(connection["provider"]), notice="deleted"))
+
     @app.get("/app/status", response_class=HTMLResponse)
     async def status_view(request: Request) -> Any:
         user = _require_user(request, repository, sessions, settings)

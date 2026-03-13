@@ -1866,6 +1866,62 @@ class WebappCoreTests(unittest.TestCase):
         self.assertEqual(second_import.headers["location"], "/app/connections?notice=profile-imported&created=0&updated=1")
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_connections_can_delete_profile(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-delete-connection.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        create_response = client.post(
+            "/app/connections",
+            data={
+                "_csrf": self.csrf_token(client),
+                "provider": "exchange",
+                "display_name": "Delete Exchange",
+                "blocked_title": "Blocked",
+                "timeout_sec": "30",
+                "exchange_tenant_id": "tenant-id",
+                "exchange_client_id": "client-id",
+                "exchange_client_secret": "secret-value",
+                "exchange_user": "info@example.com",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(create_response.status_code, 303)
+
+        repository = AppRepository(Database(database_path), SecretBox(TEST_DATA_KEY))
+        user = repository.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        connection = repository.find_connection_by_provider_and_name(int(user["id"]), "exchange", "Delete Exchange")
+        self.assertIsNotNone(connection)
+        assert connection is not None
+
+        delete_response = client.post(
+            f"/app/connections/{connection['id']}/delete",
+            data={"_csrf": self.csrf_token(client)},
+            follow_redirects=False,
+        )
+        self.assertEqual(delete_response.status_code, 303)
+        self.assertEqual(delete_response.headers["location"], "/app/connections?provider=exchange&notice=deleted")
+        self.assertIsNone(repository.get_connection(int(user["id"]), int(connection["id"])))
+
+        connections_page = client.get(delete_response.headers["location"])
+        self.assertEqual(connections_page.status_code, 200)
+        self.assertNotIn("Delete Exchange", connections_page.text)
+        self.assertIn("Eintrag gelöscht.", connections_page.text)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_backup_manager_can_create_restore_download_and_delete_backups(self) -> None:
         database_path = Path(tempfile.mkdtemp()) / "http-backups.sqlite3"
         settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)

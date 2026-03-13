@@ -471,6 +471,66 @@ class AppRepository:
             )
         return self.get_connection(user_id, connection_id)
 
+    def delete_connection(self, user_id: int, connection_id: int) -> bool:
+        connection = self.get_connection(user_id, connection_id)
+        if not connection:
+            return False
+        updated_at = iso_z(now_utc())
+        with self.database.connect() as db:
+            db.execute(
+                "DELETE FROM event_links WHERE user_id = ? AND connection_id = ?",
+                (user_id, connection_id),
+            )
+            db.execute(
+                """
+                UPDATE internal_events
+                SET source_provider = CASE
+                        WHEN source_connection_id = ? THEN 'webapp'
+                        ELSE source_provider
+                    END,
+                    source_connection_id = CASE
+                        WHEN source_connection_id = ? THEN NULL
+                        ELSE source_connection_id
+                    END,
+                    origin_provider = CASE
+                        WHEN origin_connection_id = ? THEN
+                            CASE
+                                WHEN source_connection_id IS NULL OR source_connection_id = ? THEN 'webapp'
+                                ELSE COALESCE(NULLIF(TRIM(source_provider), ''), 'webapp')
+                            END
+                        ELSE origin_provider
+                    END,
+                    origin_connection_id = CASE
+                        WHEN origin_connection_id = ? THEN
+                            CASE
+                                WHEN source_connection_id IS NULL OR source_connection_id = ? THEN NULL
+                                ELSE source_connection_id
+                            END
+                        ELSE origin_connection_id
+                    END,
+                    updated_at = ?
+                WHERE user_id = ?
+                  AND (source_connection_id = ? OR origin_connection_id = ?)
+                """,
+                (
+                    connection_id,
+                    connection_id,
+                    connection_id,
+                    connection_id,
+                    connection_id,
+                    connection_id,
+                    updated_at,
+                    user_id,
+                    connection_id,
+                    connection_id,
+                ),
+            )
+            cursor = db.execute(
+                "DELETE FROM calendar_connections WHERE user_id = ? AND id = ?",
+                (user_id, connection_id),
+            )
+        return bool(cursor.rowcount)
+
     def create_sync_job(self, user_id: int, triggered_by: str, message: str = "", status: str = "running") -> Dict[str, Any]:
         created_at = iso_z(now_utc())
         with self.database.connect() as connection:
