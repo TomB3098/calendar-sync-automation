@@ -722,6 +722,10 @@ button.danger {
   margin-top: 0.15rem;
 }
 
+.connection-alt-form {
+  margin-top: 1rem;
+}
+
 .section-kicker {
   color: var(--color-text-muted);
   font-size: 0.76rem;

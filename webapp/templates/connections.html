@@ -45,86 +45,102 @@
       </a>
       {% endfor %}
     </div>
+    {% if selected_provider == "google" %}
+    <form method="post" action="/app/connections/google/connect" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div class="form-section">
+        <div class="section-kicker">Ausgewählter Provider</div>
+        <h4>Google</h4>
+        <p class="meta-line">OAuth-Zugang für Google Calendar oder alternativ ein Service-Account-Setup.</p>
+      </div>
+
+      <div class="form-section stack">
+        <div class="section-kicker">Basisdaten</div>
+        <label>Anzeigename<input type="text" name="display_name" required /></label>
+        <label>Blocked-Titel<input type="text" name="blocked_title" value="Blocked" /></label>
+        <p class="meta-line">Policy: Exchange und iCloud erhalten immer volle Details. Google bekommt Spiegel aus Exchange/iCloud als Blocked, native Google-Termine bleiben voll.</p>
+        <label>Timeout Sekunden<input type="number" name="timeout_sec" value="30" min="5" /></label>
+      </div>
+
+      <div class="form-section stack">
+        <div class="section-kicker">Google OAuth</div>
+        <h4>Connect with Google</h4>
+        <label>Calendar ID<input type="text" name="google_calendar_id" value="primary" /></label>
+        <p class="meta-line">Die Webapp öffnet den offiziellen Google-Consent-Flow und speichert anschließend den Refresh-Token verschlüsselt in der Verbindung.</p>
+        {% if not google_oauth_available %}
+        <p class="auth-error">Google OAuth ist serverseitig noch nicht konfiguriert. Hinterlege zuerst `CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_ID` und `CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_SECRET`.</p>
+        {% endif %}
+        <div class="button-row">
+          <button type="submit">Mit Google verbinden</button>
+        </div>
+      </div>
+    </form>
+
+    <form method="post" action="/app/connections" class="stack connection-alt-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="provider" value="google" />
+      <div class="form-section stack">
+        <div class="section-kicker">Alternative</div>
+        <h4>Service Account</h4>
+        <label>Anzeigename<input type="text" name="display_name" required /></label>
+        <label>Blocked-Titel<input type="text" name="blocked_title" value="Blocked" /></label>
+        <label>Timeout Sekunden<input type="number" name="timeout_sec" value="30" min="5" /></label>
+        <label>Calendar ID<input type="text" name="google_calendar_id" value="primary" /></label>
+        <label>Service Account JSON / Pfad<textarea name="google_service_account_json" autocomplete="off"></textarea></label>
+        <label>Impersonate User<input type="text" name="google_impersonate_user" /></label>
+        <p class="meta-line">Nur erforderlich, wenn du bewusst einen Service-Account statt OAuth verwenden willst.</p>
+        <button type="submit">Google-Verbindung per Service Account speichern</button>
+      </div>
+    </form>
+    {% else %}
     <form method="post" action="/app/connections" class="stack">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <input type="hidden" name="provider" value="{{ selected_provider }}" />
       <div class="form-section">
         <div class="section-kicker">Ausgewählter Provider</div>
         <h4>
-          {% if selected_provider == "exchange" %}Exchange{% elif selected_provider == "icloud" %}iCloud{% else %}Google{% endif %}
+          {% if selected_provider == "exchange" %}Exchange{% else %}iCloud{% endif %}
         </h4>
         <p class="meta-line">
           {% if selected_provider == "exchange" %}
           App-Berechtigungen für Microsoft Graph und eine konkrete Mailbox.
-          {% elif selected_provider == "icloud" %}
-          CalDAV-Zugang mit Apple-ID, App-spezifischem Passwort und Zielkalender.
           {% else %}
-          OAuth-Zugang für Google Calendar oder alternativ ein Service-Account-Setup.
+          CalDAV-Zugang mit Apple-ID, App-spezifischem Passwort und Zielkalender.
           {% endif %}
         </p>
       </div>
 
       <div class="form-section stack">
         <div class="section-kicker">Basisdaten</div>
-      <label>Anzeigename<input type="text" name="display_name" required /></label>
-      <label>Blocked-Titel<input type="text" name="blocked_title" value="Blocked" /></label>
-      <p class="meta-line">Policy: Exchange und iCloud erhalten immer volle Details. Google bekommt Spiegel aus Exchange/iCloud als Blocked, native Google-Termine bleiben voll.</p>
-      <label>Timeout Sekunden<input type="number" name="timeout_sec" value="30" min="5" /></label>
+        <label>Anzeigename<input type="text" name="display_name" required /></label>
+        <label>Blocked-Titel<input type="text" name="blocked_title" value="Blocked" /></label>
+        <p class="meta-line">Policy: Exchange und iCloud erhalten immer volle Details. Google bekommt Spiegel aus Exchange/iCloud als Blocked, native Google-Termine bleiben voll.</p>
+        <label>Timeout Sekunden<input type="number" name="timeout_sec" value="30" min="5" /></label>
       </div>
 
       {% if selected_provider == "exchange" %}
       <div class="form-section stack">
-      <div class="section-kicker">Exchange-Konfiguration</div>
-      <h4>Microsoft Graph</h4>
-      <label>Tenant ID<input type="text" name="exchange_tenant_id" /></label>
-      <label>Client ID<input type="text" name="exchange_client_id" /></label>
-      <label>Client Secret<input type="password" name="exchange_client_secret" autocomplete="new-password" /></label>
-      <label>User / Mailbox<input type="text" name="exchange_user" /></label>
-      </div>
-      {% elif selected_provider == "icloud" %}
-
-      <div class="form-section stack">
-      <div class="section-kicker">iCloud-Konfiguration</div>
-      <h4>CalDAV</h4>
-      <label>iCloud User<input type="text" name="icloud_user" /></label>
-      <label>App Password<input type="password" name="icloud_app_pw" autocomplete="new-password" /></label>
-      <label>Principal Path<input type="text" name="icloud_principal_path" /></label>
-      <label>Calendar Displayname<input type="text" name="icloud_target_calendar_display" value="Kalender" /></label>
+        <div class="section-kicker">Exchange-Konfiguration</div>
+        <h4>Microsoft Graph</h4>
+        <label>Tenant ID<input type="text" name="exchange_tenant_id" /></label>
+        <label>Client ID<input type="text" name="exchange_client_id" /></label>
+        <label>Client Secret<input type="password" name="exchange_client_secret" autocomplete="new-password" /></label>
+        <label>User / Mailbox<input type="text" name="exchange_user" /></label>
       </div>
       {% else %}
-
       <div class="form-section stack">
-      <div class="section-kicker">Google OAuth</div>
-      <h4>Connect with Google</h4>
-      <label>Calendar ID<input type="text" name="google_calendar_id" value="primary" /></label>
-      <p class="meta-line">Die Webapp öffnet den offiziellen Google-Consent-Flow und speichert anschließend den Refresh-Token verschlüsselt in der Verbindung.</p>
-      {% if not google_oauth_available %}
-      <p class="auth-error">Google OAuth ist serverseitig noch nicht konfiguriert. Hinterlege zuerst `CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_ID` und `CAL_WEBAPP_GOOGLE_OAUTH_CLIENT_SECRET`.</p>
-      {% endif %}
-      <div class="button-row">
-        <button
-          type="submit"
-          formaction="/app/connections/google/connect"
-        >
-          Mit Google verbinden
-        </button>
-      </div>
-      </div>
-
-      <div class="form-section stack">
-      <div class="section-kicker">Alternative</div>
-      <h4>Service Account</h4>
-      <label>Service Account JSON / Pfad<textarea name="google_service_account_json" autocomplete="off"></textarea></label>
-      <label>Impersonate User<input type="text" name="google_impersonate_user" /></label>
-      <p class="meta-line">Nur erforderlich, wenn du bewusst einen Service-Account statt OAuth verwenden willst.</p>
-      <button type="submit">Google-Verbindung speichern</button>
+        <div class="section-kicker">iCloud-Konfiguration</div>
+        <h4>CalDAV</h4>
+        <label>iCloud User<input type="text" name="icloud_user" /></label>
+        <label>App Password<input type="password" name="icloud_app_pw" autocomplete="new-password" /></label>
+        <label>Principal Path<input type="text" name="icloud_principal_path" /></label>
+        <label>Calendar Displayname<input type="text" name="icloud_target_calendar_display" value="Kalender" /></label>
       </div>
       {% endif %}
 
-      {% if selected_provider != "google" %}
       <button type="submit">Verbindung speichern</button>
-      {% endif %}
     </form>
+    {% endif %}
   </article>
 </section>
 
