@@ -1,7 +1,7 @@
 {% extends "legal_base.html" %}
 
 {% block content %}
-<section class="legal-hero panel">
+<section class="legal-document panel">
   <div class="legal-hero-copy">
     <div class="brand-kicker">{{ legal_hero_eyebrow }}</div>
     <h2>{{ legal_hero_title }}</h2>
@@ -12,29 +12,28 @@
       {% endfor %}
     </div>
   </div>
-  <div class="legal-meta-grid">
+
+  <div class="legal-summary">
     {% for item in legal_meta_cards %}
-    <article class="legal-meta-card">
+    <div class="legal-summary-item">
       <span>{{ item.label }}</span>
       <strong>{{ item.value }}</strong>
-    </article>
+    </div>
     {% endfor %}
   </div>
-</section>
 
-<section class="legal-layout">
-  <aside class="legal-outline panel">
-    <div class="brand-kicker">Schnellnavigation</div>
-    <nav class="legal-outline-nav">
-      {% for item in legal_outline %}
-      <a href="#{{ item.id }}">{{ item.label }}</a>
-      {% endfor %}
-    </nav>
-  </aside>
+  <div class="legal-divider"></div>
 
-  <div class="legal-content">
+  <div class="brand-kicker">Schnellnavigation</div>
+  <nav class="legal-anchor-nav">
+    {% for item in legal_outline %}
+    <a href="#{{ item.id }}">{{ item.label }}</a>
+    {% endfor %}
+  </nav>
+
+  <div class="legal-body">
     {% for section in legal_sections %}
-    <article id="{{ section.id }}" class="legal-card panel">
+    <article id="{{ section.id }}" class="legal-section-block">
       <div class="brand-kicker">{{ section.eyebrow }}</div>
       <h3>{{ section.title }}</h3>
       {% for paragraph in section.paragraphs %}

@@ -1310,16 +1310,12 @@ pre,
   min-width: 0;
 }
 
-.legal-hero {
-  padding: 1.45rem;
-}
-
 .legal-hero-copy {
   max-width: 76ch;
 }
 
 .legal-hero-copy h2,
-.legal-card h3 {
+.legal-section-block h3 {
   margin: 0;
   font-family: "Poppins", "Segoe UI", sans-serif;
   color: var(--color-surface-dark-1);
@@ -1343,23 +1339,23 @@ pre,
   margin-top: 1.15rem;
 }
 
-.legal-meta-grid {
+.legal-document {
+  padding: 1.6rem;
+}
+
+.legal-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.9rem;
   margin-top: 1.3rem;
 }
 
-.legal-meta-card {
+.legal-summary-item {
   min-width: 0;
-  padding: 1rem 1.05rem;
-  border-radius: 22px;
-  border: 1px solid rgb(154 167 181 / 18%);
-  background: rgb(255 255 255 / 56%);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 90%);
+  padding: 0.2rem 0;
 }
 
-.legal-meta-card span {
+.legal-summary-item span {
   display: block;
   margin-bottom: 0.4rem;
   color: var(--color-text-muted);
@@ -1369,7 +1365,7 @@ pre,
   letter-spacing: 0.14em;
 }
 
-.legal-meta-card strong {
+.legal-summary-item strong {
   display: block;
   min-width: 0;
   font-family: "Poppins", "Segoe UI", sans-serif;
@@ -1379,35 +1375,31 @@ pre,
   overflow-wrap: anywhere;
 }
 
-.legal-layout {
-  display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  gap: 1rem;
-  align-items: start;
+.legal-divider {
+  height: 1px;
+  margin: 1.35rem 0 1.15rem;
+  background: linear-gradient(90deg, rgb(67 169 209 / 0%), rgb(154 167 181 / 30%) 18%, rgb(154 167 181 / 24%) 82%, rgb(252 67 73 / 0%));
 }
 
-.legal-outline {
-  position: sticky;
-  top: 1.2rem;
-  padding: 1.15rem;
-}
-
-.legal-outline-nav {
-  display: grid;
-  gap: 0.6rem;
+.legal-anchor-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
   margin-top: 0.85rem;
 }
 
-.legal-outline-nav a {
-  display: block;
+.legal-anchor-nav a {
+  display: inline-flex;
+  align-items: center;
   min-width: 0;
-  padding: 0.72rem 0.9rem;
-  border-radius: 16px;
+  min-height: 42px;
+  padding: 0 0.95rem;
+  border-radius: 9999px;
   border: 1px solid rgb(154 167 181 / 18%);
   background: rgb(255 255 255 / 48%);
   text-decoration: none;
   font-family: "Poppins", "Segoe UI", sans-serif;
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   font-weight: 600;
   color: var(--color-surface-dark-1);
   transition:
@@ -1416,29 +1408,36 @@ pre,
     background 180ms ease;
 }
 
-.legal-outline-nav a:hover {
+.legal-anchor-nav a:hover {
   transform: translateY(-1px);
   border-color: rgb(67 169 209 / 34%);
   background: rgb(255 255 255 / 80%);
 }
 
-.legal-content {
+.legal-body {
   display: grid;
-  gap: 1rem;
+  gap: 1.35rem;
+  margin-top: 1.45rem;
 }
 
-.legal-card {
+.legal-section-block {
   scroll-margin-top: 1.4rem;
-  padding: 1.2rem;
+  padding-top: 1.15rem;
+  border-top: 1px solid rgb(154 167 181 / 18%);
 }
 
-.legal-card h3 {
+.legal-section-block:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.legal-section-block h3 {
   margin-top: 0.22rem;
   font-size: clamp(1.2rem, 2vw, 1.65rem);
   line-height: 1.14;
 }
 
-.legal-card p {
+.legal-section-block p {
   margin: 0.82rem 0 0;
   max-width: 78ch;
   overflow-wrap: anywhere;
@@ -1598,14 +1597,8 @@ pre,
   .layout-split,
   .filter-grid,
   .auth-shell,
-  .legal-layout,
-  .legal-meta-grid {
+  .legal-summary {
     grid-template-columns: 1fr;
-  }
-
-  .legal-outline {
-    position: relative;
-    top: 0;
   }
 }
 
