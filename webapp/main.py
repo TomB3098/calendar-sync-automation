@@ -138,6 +138,10 @@ class AutoSyncWorker:
             if self._stop_event.is_set():
                 return
             user_id = int(user["id"])
+            stale_before = iso_z(now_utc() - timedelta(minutes=self.settings.sync_job_stale_minutes))
+            self.repository.expire_stale_running_sync_jobs(
+                user_id, stale_before, "Recovered stale sync job during auto-sync"
+            )
             if self.repository.get_running_sync_job(user_id):
                 continue
             interval_minutes = max(0, int(user.get("auto_sync_interval_minutes") or 0))
@@ -149,7 +153,7 @@ class AutoSyncWorker:
                 continue
             job, started = self.sync_service.start_user_sync(user_id, "auto-sync")
             if job and started:
-                _start_sync_thread(self.sync_service, user_id, int(job["id"]))
+                _start_sync_thread(self.sync_service, self.repository, user_id, int(job["id"]))
 
 
 def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
@@ -1003,7 +1007,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not started:
             return _redirect(f"/app/logs?sync=already-running&job_id={job['id']}")
         try:
-            _start_sync_thread(sync_service, int(user["id"]), int(job["id"]))
+            _start_sync_thread(sync_service, repository, int(user["id"]), int(job["id"]))
         except Exception as exc:
             repository.finish_sync_job(int(job["id"]), "failed", f"Background start failed: {exc}")
             return _redirect(f"/app/logs?sync=failed&job_id={job['id']}")
@@ -2438,14 +2442,30 @@ def _auto_sync_status(user: Dict[str, Any]) -> str:
     return f"Auto-Sync startet alle {interval} Minuten."
 
 
+def _safe_run_sync_job(
+    sync_service: SyncService,
+    repository: AppRepository,
+    user_id: int,
+    job_id: int,
+) -> None:
+    try:
+        sync_service.run_sync_job(user_id, job_id)
+    except Exception:
+        try:
+            repository.finish_sync_job(job_id, "failed", "Sync thread crashed unexpectedly")
+        except Exception:
+            pass
+
+
 def _start_sync_thread(
     sync_service: SyncService,
+    repository: AppRepository,
     user_id: int,
     job_id: int,
 ) -> threading.Thread:
     thread = threading.Thread(
-        target=sync_service.run_sync_job,
-        args=(user_id, job_id),
+        target=_safe_run_sync_job,
+        args=(sync_service, repository, user_id, job_id),
         name=f"sync-job-{job_id}",
         daemon=True,
     )
