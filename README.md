@@ -24,6 +24,8 @@ Es gibt derzeit zwei Einstiegspunkte:
 - Login-Throttling gegen brute-force Versuche
 - Provider-Secrets werden in der Datenbank verschluesselt gespeichert
 - Passwort-Hashing mit Argon2, falls die Abhaengigkeit installiert ist
+- oeffentliche Seiten fuer `Impressum` und `Datenschutz`
+- app-spezifische Datenschutzhinweise fuer internen Kalender-Sync
 
 ## Sicherheitsmodell
 
@@ -105,6 +107,16 @@ Empfohlen:
 ```bash
 CAL_WEBAPP_NAME='Aether Calendar Console'
 CAL_WEBAPP_DB_PATH='data/calendar_webapp.sqlite3'
+CAL_WEBAPP_LEGAL_BRAND_NAME='Webdesign Becker'
+CAL_WEBAPP_LEGAL_BUSINESS_NAME='TB Media UG (haftungsbeschraenkt)'
+CAL_WEBAPP_LEGAL_REPRESENTATIVE_NAME='Tom Becker'
+CAL_WEBAPP_LEGAL_STREET='Siempelkampstrasse 78'
+CAL_WEBAPP_LEGAL_POSTAL_CITY='47803 Krefeld'
+CAL_WEBAPP_LEGAL_EMAIL='info@tb-media.net'
+CAL_WEBAPP_LEGAL_PHONE='02151 9288541'
+CAL_WEBAPP_LEGAL_WHATSAPP='01525 8530929'
+CAL_WEBAPP_LEGAL_VAT_ID='DE366883061'
+CAL_WEBAPP_LEGAL_WEBSITE_URL='https://webdesign-becker.de'
 CAL_WEBAPP_SECRET='replace-with-random-secret'
 CAL_WEBAPP_DATA_KEY='replace-with-fernet-key'
 CAL_WEBAPP_SESSION_COOKIE='aether_session'

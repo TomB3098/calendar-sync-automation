@@ -110,6 +110,16 @@ class WebappCoreTests(unittest.TestCase):
             "app_name": "Test Calendar Console",
             "database_path": database_path or self.database.path,
             "backup_directory": (database_path or self.database.path).parent / "backups",
+            "legal_brand_name": "Webdesign Becker",
+            "legal_business_name": "TB Media UG (haftungsbeschränkt)",
+            "legal_representative_name": "Tom Becker",
+            "legal_street": "Siempelkampstraße 78",
+            "legal_postal_city": "47803 Krefeld",
+            "legal_email": "info@tb-media.net",
+            "legal_phone": "02151 9288541",
+            "legal_whatsapp": "01525 8530929",
+            "legal_vat_id": "DE366883061",
+            "legal_website_url": "https://webdesign-becker.de",
             "app_secret": "test-secret-value",
             "data_encryption_key": TEST_DATA_KEY,
             "session_cookie_name": "test_session",
@@ -1246,6 +1256,28 @@ class WebappCoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Webapp Planning", response.text)
         self.assertIn("Created from integration test", response.text)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_public_legal_pages_are_accessible_without_login(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-legal.sqlite3"
+        settings = self.make_settings(database_path=database_path)
+        client = TestClient(create_app(settings))
+
+        imprint_response = client.get("/impressum")
+        self.assertEqual(imprint_response.status_code, 200)
+        self.assertIn("TB Media UG (haftungsbeschränkt)", imprint_response.text)
+        self.assertIn("DE366883061", imprint_response.text)
+        self.assertIn("Tom Becker", imprint_response.text)
+
+        privacy_response = client.get("/datenschutz")
+        self.assertEqual(privacy_response.status_code, 200)
+        self.assertIn("ausschließlich der internen Verwaltung", privacy_response.text)
+        self.assertIn("Microsoft Exchange", privacy_response.text)
+        self.assertIn("Google Calendar", privacy_response.text)
+
+        login_response = client.get("/login")
+        self.assertIn("/impressum", login_response.text)
+        self.assertIn("/datenschutz", login_response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_dashboard_can_update_auto_sync_interval(self) -> None:

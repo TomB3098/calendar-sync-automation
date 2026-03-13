@@ -207,6 +207,32 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         payload = status_monitor.readiness_payload()
         return JSONResponse(payload, status_code=200 if payload["status"] == "ready" else 503)
 
+    @app.get("/impressum", response_class=HTMLResponse)
+    async def imprint_page(request: Request) -> Any:
+        user = _current_user(request, repository, sessions, settings)
+        context = _public_context(request, settings, "Impressum", user)
+        context.update(
+            {
+                "legal_dispute_notice": (
+                    "Wir nehmen nicht an Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teil "
+                    "und sind dazu auch nicht verpflichtet."
+                ),
+            }
+        )
+        return _render_template(request, settings, csrf, "imprint.html", context)
+
+    @app.get("/datenschutz", response_class=HTMLResponse)
+    async def privacy_page(request: Request) -> Any:
+        user = _current_user(request, repository, sessions, settings)
+        context = _public_context(request, settings, "Datenschutz", user)
+        context.update(
+            {
+                "privacy_last_updated": "13. März 2026",
+                "privacy_provider_names": ["Microsoft Exchange", "Apple iCloud", "Google Calendar"],
+            }
+        )
+        return _render_template(request, settings, csrf, "privacy.html", context)
+
     @app.get("/setup", response_class=HTMLResponse)
     async def setup_page(request: Request) -> Any:
         if repository.count_users() > 0:
@@ -217,8 +243,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             csrf,
             "setup.html",
             {
-                "title": "Ersten Zugang anlegen",
-                "app_name": settings.app_name,
+                **_public_context(request, settings, "Ersten Zugang anlegen"),
                 "error_message": _setup_error_message(request),
             },
         )
@@ -257,8 +282,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             csrf,
             "login.html",
             {
-                "title": "Anmelden",
-                "app_name": settings.app_name,
+                **_public_context(request, settings, "Anmelden"),
                 "error_message": _login_error_message(request),
             },
         )
@@ -318,8 +342,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             csrf,
             "login_2fa.html",
             {
-                "title": "Zwei-Faktor-Bestätigung",
-                "app_name": settings.app_name,
+                **_public_context(request, settings, "Zwei-Faktor-Bestätigung"),
                 "pending_email": str(user["email"]),
                 "error_message": _two_factor_login_error_message(request),
             },
@@ -1083,6 +1106,38 @@ def _base_context(request: Request, settings: AppSettings, user: Dict[str, Any],
         "app_name": settings.app_name,
         "user": user,
         "now": now_utc(),
+        **_legal_context(settings),
+    }
+
+
+def _public_context(
+    request: Request,
+    settings: AppSettings,
+    title: str,
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "request": request,
+        "title": title,
+        "app_name": settings.app_name,
+        "user": user,
+        "now": now_utc(),
+        **_legal_context(settings),
+    }
+
+
+def _legal_context(settings: AppSettings) -> Dict[str, Any]:
+    return {
+        "legal_brand_name": settings.legal_brand_name,
+        "legal_business_name": settings.legal_business_name,
+        "legal_representative_name": settings.legal_representative_name,
+        "legal_street": settings.legal_street,
+        "legal_postal_city": settings.legal_postal_city,
+        "legal_email": settings.legal_email,
+        "legal_phone": settings.legal_phone,
+        "legal_whatsapp": settings.legal_whatsapp,
+        "legal_vat_id": settings.legal_vat_id,
+        "legal_website_url": settings.legal_website_url,
     }
 
 

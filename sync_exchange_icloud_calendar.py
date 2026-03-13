@@ -1538,6 +1538,26 @@ class GoogleClient:
         self.cfg = cfg
         self._token: Optional[str] = None
 
+    @staticmethod
+    def _raise_token_request_error(response: requests.Response, auth_flow: str) -> None:
+        detail = ""
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            error = str(payload.get("error") or "").strip()
+            description = str(payload.get("error_description") or "").strip()
+            if error and description:
+                detail = f"{error}: {description}"
+            elif error:
+                detail = error
+            elif payload:
+                detail = json.dumps(payload, ensure_ascii=False)
+        if not detail:
+            detail = (response.text or "").strip() or f"HTTP {response.status_code}"
+        raise RuntimeError(f"Google OAuth {auth_flow} failed ({response.status_code}): {detail}")
+
     def _token_from_refresh(self) -> Optional[str]:
         if not (
             self.cfg.google_oauth_client_id
@@ -1556,7 +1576,8 @@ class GoogleClient:
             },
             timeout=self.cfg.timeout_sec,
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            self._raise_token_request_error(r, "refresh token exchange")
         return r.json().get("access_token")
 
     def _token_from_service_account(self) -> Optional[str]:
@@ -1594,7 +1615,8 @@ class GoogleClient:
             },
             timeout=self.cfg.timeout_sec,
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            self._raise_token_request_error(r, "service account exchange")
         return r.json().get("access_token")
 
     def _token_value(self) -> str:

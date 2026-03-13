@@ -38,6 +38,7 @@
             <div class="brand-kicker">Routing Policy</div>
             <p>Exchange und iCloud bleiben voll synchron. Google spiegelt geschützt als Blocked, außer der Termin stammt nativ aus Google.</p>
           </div>
+          {% include "partials/legal_links.html" %}
           <div class="user-chip">{{ user.email }}</div>
           <form method="post" action="/logout" class="logout-form">
             <input type="hidden" name="_csrf" value="{{ csrf_token }}" />

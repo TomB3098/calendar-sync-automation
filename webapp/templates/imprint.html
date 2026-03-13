@@ -1,0 +1,37 @@
+{% extends "legal_base.html" %}
+
+{% block content %}
+<section class="legal-page panel">
+  <div class="legal-copy">
+    <div class="brand-kicker">Angaben gemäß § 5 DDG</div>
+    <h2>{{ legal_business_name }}</h2>
+    <p>{{ legal_street }}<br />{{ legal_postal_city }}</p>
+  </div>
+  <div class="legal-grid">
+    <article class="legal-section">
+      <h3>Vertreten durch</h3>
+      <p>{{ legal_representative_name }}</p>
+    </article>
+    <article class="legal-section">
+      <h3>Kontakt</h3>
+      <p><a href="mailto:{{ legal_email }}">{{ legal_email }}</a></p>
+      <p><a href="tel:{{ legal_phone | replace(' ', '') }}">{{ legal_phone }}</a></p>
+      {% if legal_whatsapp %}
+      <p>WhatsApp: <a href="tel:{{ legal_whatsapp | replace(' ', '') }}">{{ legal_whatsapp }}</a></p>
+      {% endif %}
+    </article>
+    <article class="legal-section">
+      <h3>Umsatzsteuer-ID</h3>
+      <p>{{ legal_vat_id }}</p>
+    </article>
+    <article class="legal-section">
+      <h3>Inhaltlich verantwortlich</h3>
+      <p>{{ legal_representative_name }}<br />{{ legal_street }}<br />{{ legal_postal_city }}</p>
+    </article>
+  </div>
+  <article class="legal-section legal-section-wide">
+    <h3>Verbraucherstreitbeilegung</h3>
+    <p>{{ legal_dispute_notice }}</p>
+  </article>
+</section>
+{% endblock %}

@@ -258,6 +258,27 @@ class CalendarSyncLogicTests(unittest.TestCase):
         self.assertEqual(payload["end"], {"date": "2026-03-13"})
         self.assertEqual(payload["summary"], "Blocked")
 
+    def test_google_token_refresh_error_surfaces_google_reason(self) -> None:
+        cfg = self.make_cfg()
+        cfg.google_enabled = True
+        cfg.google_oauth_client_id = "client-id"
+        cfg.google_oauth_client_secret = "client-secret"
+        cfg.google_oauth_refresh_token = "refresh-token"
+        client = mod.GoogleClient(cfg)
+
+        response = Mock(status_code=400, text='{"error":"invalid_grant"}')
+        response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "Token has been expired or revoked.",
+        }
+
+        with patch.object(mod.requests, "post", return_value=response):
+            with self.assertRaises(RuntimeError) as exc_info:
+                client._token_from_refresh()
+
+        self.assertIn("invalid_grant", str(exc_info.exception))
+        self.assertIn("expired or revoked", str(exc_info.exception))
+
     def test_infer_group_delete_reason_when_source_missing(self) -> None:
         state = mod.SyncState(Path(tempfile.mkdtemp()) / "state.json")
         sync_id = "sync-delete"

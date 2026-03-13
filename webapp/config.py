@@ -24,6 +24,16 @@ class AppSettings:
     app_name: str
     database_path: Path
     backup_directory: Path
+    legal_brand_name: str
+    legal_business_name: str
+    legal_representative_name: str
+    legal_street: str
+    legal_postal_city: str
+    legal_email: str
+    legal_phone: str
+    legal_whatsapp: str
+    legal_vat_id: str
+    legal_website_url: str
     app_secret: str
     data_encryption_key: str
     session_cookie_name: str
@@ -56,6 +66,16 @@ class AppSettings:
             app_name=os.getenv("CAL_WEBAPP_NAME", "Aether Calendar Console"),
             database_path=database_path,
             backup_directory=backup_directory,
+            legal_brand_name=os.getenv("CAL_WEBAPP_LEGAL_BRAND_NAME", "Webdesign Becker"),
+            legal_business_name=os.getenv("CAL_WEBAPP_LEGAL_BUSINESS_NAME", "TB Media UG (haftungsbeschränkt)"),
+            legal_representative_name=os.getenv("CAL_WEBAPP_LEGAL_REPRESENTATIVE_NAME", "Tom Becker"),
+            legal_street=os.getenv("CAL_WEBAPP_LEGAL_STREET", "Siempelkampstraße 78"),
+            legal_postal_city=os.getenv("CAL_WEBAPP_LEGAL_POSTAL_CITY", "47803 Krefeld"),
+            legal_email=os.getenv("CAL_WEBAPP_LEGAL_EMAIL", "info@tb-media.net"),
+            legal_phone=os.getenv("CAL_WEBAPP_LEGAL_PHONE", "02151 9288541"),
+            legal_whatsapp=os.getenv("CAL_WEBAPP_LEGAL_WHATSAPP", "01525 8530929"),
+            legal_vat_id=os.getenv("CAL_WEBAPP_LEGAL_VAT_ID", "DE366883061"),
+            legal_website_url=os.getenv("CAL_WEBAPP_LEGAL_WEBSITE_URL", "https://webdesign-becker.de"),
             app_secret=os.getenv("CAL_WEBAPP_SECRET", ""),
             data_encryption_key=os.getenv("CAL_WEBAPP_DATA_KEY", ""),
             session_cookie_name=os.getenv("CAL_WEBAPP_SESSION_COOKIE", "aether_session"),
