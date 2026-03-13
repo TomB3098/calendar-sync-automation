@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from fastapi import FastAPI, Request
@@ -426,13 +427,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         total_event_count = repository.count_internal_events(int(user["id"]), include_deleted=True)
         archived_event_count = max(0, total_event_count - active_event_count)
         provider_link_count = repository.count_event_links(int(user["id"]))
-        jobs = repository.list_sync_jobs(int(user["id"]), 8)
+        jobs = [_job_for_template(item, settings) for item in repository.list_sync_jobs(int(user["id"]), 8)]
         recent_dashboard_logs = [
-            _log_entry_for_template(entry) for entry in repository.list_sync_log_entries(int(user["id"]), 160)
+            _log_entry_for_template(entry, settings) for entry in repository.list_sync_log_entries(int(user["id"]), 160)
         ]
         dashboard_errors = [entry for entry in recent_dashboard_logs if _log_entry_has_error(entry)]
         dashboard_changes = [entry for entry in recent_dashboard_logs if _log_entry_has_visible_change(entry)]
-        running_job = repository.get_running_sync_job(int(user["id"]))
+        running_job = _job_for_template(repository.get_running_sync_job(int(user["id"])), settings)
         context = _base_context(request, settings, user, "Dashboard")
         context.update(
             {
@@ -461,17 +462,17 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not user:
             return _redirect("/setup" if repository.count_users() == 0 else "/login")
         raw_events = repository.list_internal_events(int(user["id"]))
-        events = [_event_for_template(event) for event in raw_events]
+        events = [_event_for_template(event, settings) for event in raw_events]
         edit_id = request.query_params.get("edit")
         edit_event = repository.get_internal_event(int(user["id"]), int(edit_id)) if edit_id and edit_id.isdigit() else None
         month_anchor = _parse_calendar_month(str(request.query_params.get("month") or ""))
-        calendar_view_data = _build_calendar_month(events, month_anchor)
+        calendar_view_data = _build_calendar_month(events, month_anchor, settings)
         context = _base_context(request, settings, user, "Kalender")
         context.update(
             {
                 "events": events,
                 "calendar_month": calendar_view_data,
-                "edit_event": _event_for_template(edit_event) if edit_event else None,
+                "edit_event": _event_for_template(edit_event, settings) if edit_event else None,
                 "page_notice": _page_notice(request),
             }
         )
@@ -487,8 +488,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             return _redirect("/app/calendar?error=security")
         event_id = str(form.get("event_id") or "").strip()
         title = normalize_singleline_text(str(form.get("title") or ""))
-        starts_at = _normalise_form_datetime(str(form.get("starts_at") or ""))
-        ends_at = _normalise_form_datetime(str(form.get("ends_at") or ""))
+        starts_at = _normalise_form_datetime(str(form.get("starts_at") or ""), settings)
+        ends_at = _normalise_form_datetime(str(form.get("ends_at") or ""), settings)
         description = normalize_calendar_description(str(form.get("description") or ""), source_format="auto")
         location = normalize_singleline_text(str(form.get("location") or ""))
         recurrence_rule = str(form.get("recurrence_rule") or "").strip()
@@ -795,7 +796,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         context.update(
             {
                 "page_notice": _page_notice(request),
-                "status_snapshot": snapshot,
+                "status_snapshot": _status_snapshot_for_template(snapshot, settings),
                 "health_url": "/healthz",
                 "ready_url": "/readyz",
             }
@@ -807,13 +808,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         user = _require_user(request, repository, sessions, settings)
         if not user:
             return _redirect("/setup" if repository.count_users() == 0 else "/login")
-        backups = [_backup_for_template(item) for item in backup_manager.list_backups()]
+        backups = [_backup_for_template(item, settings) for item in backup_manager.list_backups()]
         context = _base_context(request, settings, user, "Backup-Manager")
         context.update(
             {
                 "page_notice": _page_notice(request),
                 "backups": backups,
-                "running_job": repository.get_running_sync_job(int(user["id"])),
+                "running_job": _job_for_template(repository.get_running_sync_job(int(user["id"])), settings),
                 "backup_directory": str(settings.backup_directory),
             }
         )
@@ -1034,8 +1035,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         user = _require_user(request, repository, sessions, settings)
         if not user:
             return _redirect("/setup" if repository.count_users() == 0 else "/login")
-        running_job = repository.get_running_sync_job(int(user["id"]))
-        jobs = repository.list_sync_jobs(int(user["id"]), 25)
+        running_job = _job_for_template(repository.get_running_sync_job(int(user["id"])), settings)
+        jobs = [_job_for_template(item, settings) for item in repository.list_sync_jobs(int(user["id"]), 25)]
         raw_log_entries = repository.list_sync_log_entries(int(user["id"]), 500)
         log_filters = _parse_log_filters(request)
         filtered_log_entries = _filter_log_entries(raw_log_entries, log_filters)
@@ -1043,7 +1044,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         context.update(
             {
                 "jobs": jobs,
-                "log_entries": [_log_entry_for_template(entry) for entry in filtered_log_entries],
+                "log_entries": [_log_entry_for_template(entry, settings) for entry in filtered_log_entries],
                 "log_filters": log_filters,
                 "log_provider_options": _log_filter_options(raw_log_entries, "provider"),
                 "log_level_options": _log_filter_options(raw_log_entries, "level"),
@@ -1949,7 +1950,29 @@ def _setup_error_message(request: Request) -> Optional[str]:
     return None
 
 
-def _normalise_form_datetime(value: str) -> Optional[str]:
+def _display_timezone(settings: Optional[AppSettings]) -> Any:
+    timezone_name = str(settings.display_timezone if settings else "Europe/Berlin").strip() or "Europe/Berlin"
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return UTC
+
+
+def _display_timezone_name(settings: AppSettings, raw: Optional[str] = None) -> str:
+    parsed = parse_utc(str(raw or "")) or now_utc()
+    local = parsed.astimezone(_display_timezone(settings))
+    return local.tzname() or settings.display_timezone
+
+
+def _format_timestamp(raw: str, settings: AppSettings) -> str:
+    parsed = parse_utc(raw)
+    if not parsed:
+        return raw
+    local = parsed.astimezone(_display_timezone(settings))
+    return f"{local.strftime('%Y-%m-%d %H:%M')} {_display_timezone_name(settings, raw)}"
+
+
+def _normalise_form_datetime(value: str, settings: AppSettings) -> Optional[str]:
     raw = value.strip()
     if not raw:
         return None
@@ -1958,22 +1981,27 @@ def _normalise_form_datetime(value: str) -> Optional[str]:
     if raw.endswith("Z") or "+" in raw[10:]:
         parsed = parse_utc(raw)
     else:
-        parsed = parse_utc(raw + "Z")
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            parsed = None
+        if parsed and parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_display_timezone(settings))
     return parsed.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z") if parsed else None
 
 
-def _format_datetime_for_input(raw: str) -> str:
+def _format_datetime_for_input(raw: str, settings: AppSettings) -> str:
     parsed = parse_utc(raw)
     if not parsed:
         return ""
-    return parsed.strftime("%Y-%m-%dT%H:%M")
+    return parsed.astimezone(_display_timezone(settings)).strftime("%Y-%m-%dT%H:%M")
 
 
-def _format_datetime_for_humans(raw: str) -> str:
+def _format_datetime_for_humans(raw: str, settings: AppSettings) -> str:
     parsed = parse_utc(raw)
     if not parsed:
         return raw
-    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+    return _format_timestamp(raw, settings)
 
 
 def _format_two_factor_secret(secret: str) -> str:
@@ -2002,32 +2030,34 @@ def _totp_qr_data_uri(provisioning_uri: str) -> str:
     return f"data:image/svg+xml;base64,{encoded}"
 
 
-def _format_time_badge(event: Dict[str, Any]) -> str:
+def _format_time_badge(event: Dict[str, Any], settings: AppSettings) -> str:
     if bool(event.get("is_all_day")):
         return "Ganztag"
     starts_at = parse_utc(str(event.get("starts_at") or ""))
     ends_at = parse_utc(str(event.get("ends_at") or ""))
     if not starts_at or not ends_at:
         return ""
-    if starts_at.date() == ends_at.date():
-        return f"{starts_at.strftime('%H:%M')} - {ends_at.strftime('%H:%M')} UTC"
-    return f"{starts_at.strftime('%d.%m %H:%M')} - {ends_at.strftime('%d.%m %H:%M')} UTC"
+    starts_local = starts_at.astimezone(_display_timezone(settings))
+    ends_local = ends_at.astimezone(_display_timezone(settings))
+    if starts_local.date() == ends_local.date():
+        return f"{starts_local.strftime('%H:%M')} - {ends_local.strftime('%H:%M')}"
+    return f"{starts_local.strftime('%d.%m %H:%M')} - {ends_local.strftime('%d.%m %H:%M')}"
 
 
-def _event_for_template(event: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _event_for_template(event: Optional[Dict[str, Any]], settings: AppSettings) -> Optional[Dict[str, Any]]:
     if not event:
         return None
     enriched = dict(event)
     enriched["title"] = normalize_singleline_text(str(event["title"]))
     enriched["description"] = normalize_calendar_description(str(event.get("description") or ""), source_format="auto")
     enriched["location"] = normalize_singleline_text(str(event.get("location") or ""))
-    enriched["starts_at_input"] = _format_datetime_for_input(event["starts_at"])
-    enriched["ends_at_input"] = _format_datetime_for_input(event["ends_at"])
-    enriched["starts_at_human"] = _format_datetime_for_humans(event["starts_at"])
-    enriched["ends_at_human"] = _format_datetime_for_humans(event["ends_at"])
+    enriched["starts_at_input"] = _format_datetime_for_input(event["starts_at"], settings)
+    enriched["ends_at_input"] = _format_datetime_for_input(event["ends_at"], settings)
+    enriched["starts_at_human"] = _format_datetime_for_humans(event["starts_at"], settings)
+    enriched["ends_at_human"] = _format_datetime_for_humans(event["ends_at"], settings)
     enriched["source_label"] = event["source_provider"] or "webapp"
     enriched["source_slug"] = str(event.get("source_provider") or "webapp").strip().lower()
-    enriched["time_badge"] = _format_time_badge(event)
+    enriched["time_badge"] = _format_time_badge(event, settings)
     return enriched
 
 
@@ -2066,22 +2096,24 @@ def _calendar_month_label(anchor: date) -> str:
     return f"{month_names[anchor.month - 1]} {anchor.year}"
 
 
-def _event_dates_for_calendar(event: Dict[str, Any], view_start: date, view_end: date) -> List[date]:
+def _event_dates_for_calendar(event: Dict[str, Any], view_start: date, view_end: date, settings: AppSettings) -> List[date]:
     starts_at = parse_utc(str(event.get("starts_at") or ""))
     ends_at = parse_utc(str(event.get("ends_at") or ""))
     if not starts_at:
         return []
     if not ends_at or ends_at < starts_at:
         ends_at = starts_at
+    starts_local = starts_at.astimezone(_display_timezone(settings))
+    ends_local = ends_at.astimezone(_display_timezone(settings))
 
-    start_day = starts_at.date()
+    start_day = starts_local.date()
     if bool(event.get("is_all_day")):
-        end_exclusive = ends_at.date()
+        end_exclusive = ends_local.date()
         if end_exclusive <= start_day:
             end_exclusive = start_day + timedelta(days=1)
         end_day = end_exclusive - timedelta(days=1)
     else:
-        end_day = (ends_at - timedelta(seconds=1)).date() if ends_at > starts_at else starts_at.date()
+        end_day = (ends_local - timedelta(seconds=1)).date() if ends_at > starts_at else starts_local.date()
         if end_day < start_day:
             end_day = start_day
 
@@ -2093,19 +2125,24 @@ def _event_dates_for_calendar(event: Dict[str, Any], view_start: date, view_end:
     return [clipped_start + timedelta(days=index) for index in range((clipped_end - clipped_start).days + 1)]
 
 
-def _calendar_chip_for_event(event: Dict[str, Any], day: date) -> Dict[str, Any]:
+def _calendar_chip_for_event(event: Dict[str, Any], day: date, settings: AppSettings) -> Dict[str, Any]:
     starts_at = parse_utc(str(event.get("starts_at") or ""))
     ends_at = parse_utc(str(event.get("ends_at") or ""))
-    is_first_day = bool(starts_at and starts_at.date() == day)
-    is_last_day = bool(ends_at and ((ends_at - timedelta(seconds=1)).date() if ends_at > starts_at else ends_at.date()) == day)
+    starts_local = starts_at.astimezone(_display_timezone(settings)) if starts_at else None
+    ends_local = ends_at.astimezone(_display_timezone(settings)) if ends_at else None
+    is_first_day = bool(starts_local and starts_local.date() == day)
+    is_last_day = bool(
+        ends_local
+        and ((ends_local - timedelta(seconds=1)).date() if starts_local and ends_local > starts_local else ends_local.date()) == day
+    )
     if bool(event.get("is_all_day")):
         badge = "Ganztag"
-    elif starts_at and ends_at and starts_at.date() == day and ends_at.date() == day:
-        badge = f"{starts_at.strftime('%H:%M')}"
-    elif starts_at and starts_at.date() == day:
-        badge = f"Start {starts_at.strftime('%H:%M')}"
-    elif ends_at and is_last_day:
-        badge = f"Bis {ends_at.strftime('%H:%M')}"
+    elif starts_local and ends_local and starts_local.date() == day and ends_local.date() == day:
+        badge = f"{starts_local.strftime('%H:%M')}"
+    elif starts_local and starts_local.date() == day:
+        badge = f"Start {starts_local.strftime('%H:%M')}"
+    elif ends_local and is_last_day:
+        badge = f"Bis {ends_local.strftime('%H:%M')}"
     else:
         badge = "Fortlaufend"
     return {
@@ -2123,7 +2160,7 @@ def _calendar_chip_for_event(event: Dict[str, Any], day: date) -> Dict[str, Any]
     }
 
 
-def _build_calendar_month(events: List[Dict[str, Any]], month_anchor: date) -> Dict[str, Any]:
+def _build_calendar_month(events: List[Dict[str, Any]], month_anchor: date, settings: AppSettings) -> Dict[str, Any]:
     month_cal = monthcalendar.Calendar(firstweekday=0)
     weeks = month_cal.monthdatescalendar(month_anchor.year, month_anchor.month)
     view_start = weeks[0][0]
@@ -2132,18 +2169,18 @@ def _build_calendar_month(events: List[Dict[str, Any]], month_anchor: date) -> D
 
     visible_events: List[Dict[str, Any]] = []
     for event in events:
-        active_days = _event_dates_for_calendar(event, view_start, view_end)
+        active_days = _event_dates_for_calendar(event, view_start, view_end, settings)
         if not active_days:
             continue
         visible_events.append(event)
         for day in active_days:
-            event_map.setdefault(day, []).append(_calendar_chip_for_event(event, day))
+            event_map.setdefault(day, []).append(_calendar_chip_for_event(event, day, settings))
 
     for day_events in event_map.values():
         day_events.sort(key=lambda item: (item["time_badge"] == "Ganztag", item["time_badge"], item["title"]))
 
     week_rows: List[List[Dict[str, Any]]] = []
-    today = now_utc().date()
+    today = now_utc().astimezone(_display_timezone(settings)).date()
     for week in weeks:
         row: List[Dict[str, Any]] = []
         for day in week:
@@ -2177,7 +2214,7 @@ def _build_calendar_month(events: List[Dict[str, Any]], month_anchor: date) -> D
     }
 
 
-def _display_log_value(value: Any) -> str:
+def _display_log_value(value: Any, settings: AppSettings) -> str:
     if value in (None, ""):
         return "leer"
     if isinstance(value, bool):
@@ -2187,6 +2224,10 @@ def _display_log_value(value: Any) -> str:
         return joined or "leer"
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, indent=2)
+    if isinstance(value, str):
+        parsed = parse_utc(value)
+        if parsed:
+            return _format_datetime_for_humans(value, settings)
     return str(value)
 
 
@@ -2304,7 +2345,7 @@ def _log_result_summary(filters: Dict[str, Any], result_count: int, total_count:
     return " · ".join(parts)
 
 
-def _log_entry_for_template(entry: Dict[str, Any]) -> Dict[str, Any]:
+def _log_entry_for_template(entry: Dict[str, Any], settings: AppSettings) -> Dict[str, Any]:
     enriched = dict(entry)
     payload = dict(entry.get("payload") or {})
     changes = []
@@ -2312,10 +2353,11 @@ def _log_entry_for_template(entry: Dict[str, Any]) -> Dict[str, Any]:
         changes.append(
             {
                 "label": str(change.get("label") or change.get("field") or ""),
-                "before": _display_log_value(change.get("before")),
-                "after": _display_log_value(change.get("after")),
+                "before": _display_log_value(change.get("before"), settings),
+                "after": _display_log_value(change.get("after"), settings),
             }
         )
+    enriched["created_at"] = _format_timestamp(str(entry.get("created_at") or ""), settings)
     enriched["detail_line"] = str(payload.get("detail") or "")
     enriched["changes"] = changes
     enriched["change_summary"] = ", ".join(change["label"] for change in changes)
@@ -2346,14 +2388,34 @@ def _connection_for_template(connection: Dict[str, Any]) -> Dict[str, Any]:
     return enriched
 
 
-def _backup_for_template(backup: Dict[str, Any]) -> Dict[str, Any]:
+def _backup_for_template(backup: Dict[str, Any], settings: AppSettings) -> Dict[str, Any]:
     enriched = dict(backup)
     counts = dict(backup.get("counts") or {})
+    raw_created = str(backup.get("created_at") or "").strip()
+    enriched["created_at"] = _format_timestamp(raw_created, settings) if raw_created else ""
     enriched["database_size_human"] = _format_bytes(int(backup.get("database_size_bytes") or 0))
     enriched["user_count"] = int(counts.get("users") or 0)
     enriched["connection_count"] = int(counts.get("calendar_connections") or 0)
     enriched["event_count"] = int(counts.get("internal_events") or 0)
     enriched["job_count"] = int(counts.get("sync_jobs") or 0)
+    return enriched
+
+
+def _job_for_template(job: Optional[Dict[str, Any]], settings: AppSettings) -> Optional[Dict[str, Any]]:
+    if not job:
+        return None
+    enriched = dict(job)
+    for field in ("created_at", "started_at", "finished_at"):
+        raw_value = str(job.get(field) or "").strip()
+        enriched[field] = _format_timestamp(raw_value, settings) if raw_value else ""
+    return enriched
+
+
+def _status_snapshot_for_template(snapshot: Dict[str, Any], settings: AppSettings) -> Dict[str, Any]:
+    enriched = dict(snapshot)
+    enriched["timestamp"] = _format_timestamp(str(snapshot.get("timestamp") or ""), settings)
+    enriched["latest_job"] = _job_for_template(snapshot.get("latest_job"), settings)
+    enriched["running_job"] = _job_for_template(snapshot.get("running_job"), settings)
     return enriched
 
 

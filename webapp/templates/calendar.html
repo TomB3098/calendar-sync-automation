@@ -63,8 +63,8 @@
       <label>Titel<input type="text" name="title" value="{{ edit_event.title if edit_event else '' }}" required /></label>
       <label>Beschreibung<textarea name="description">{{ edit_event.description if edit_event else '' }}</textarea></label>
       <label>Ort<input type="text" name="location" value="{{ edit_event.location if edit_event else '' }}" /></label>
-      <label>Start (UTC)<input type="datetime-local" name="starts_at" value="{{ edit_event.starts_at_input if edit_event else '' }}" required /></label>
-      <label>Ende (UTC)<input type="datetime-local" name="ends_at" value="{{ edit_event.ends_at_input if edit_event else '' }}" required /></label>
+      <label>Start (Lokalzeit)<input type="datetime-local" name="starts_at" value="{{ edit_event.starts_at_input if edit_event else '' }}" required /></label>
+      <label>Ende (Lokalzeit)<input type="datetime-local" name="ends_at" value="{{ edit_event.ends_at_input if edit_event else '' }}" required /></label>
       <label>RRULE / Wiederholung<textarea name="recurrence_rule">{{ edit_event.recurrence_rule if edit_event else '' }}</textarea></label>
       <div class="button-row">
         <button type="submit">{% if edit_event %}Speichern{% else %}Event anlegen{% endif %}</button>

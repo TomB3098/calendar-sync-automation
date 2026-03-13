@@ -31,6 +31,7 @@ def _env_first(*names: str, default: str = "") -> str:
 class AppSettings:
     app_name: str
     public_base_url: str
+    display_timezone: str
     database_path: Path
     backup_directory: Path
     legal_brand_name: str
@@ -76,6 +77,7 @@ class AppSettings:
         return cls(
             app_name=os.getenv("CAL_WEBAPP_NAME", "Aether Calendar Console"),
             public_base_url=_env_first("CAL_WEBAPP_PUBLIC_BASE_URL", default="").rstrip("/"),
+            display_timezone=os.getenv("CAL_WEBAPP_DISPLAY_TIMEZONE", "Europe/Berlin").strip() or "Europe/Berlin",
             database_path=database_path,
             backup_directory=backup_directory,
             legal_brand_name=os.getenv("CAL_WEBAPP_LEGAL_BRAND_NAME", "Webdesign Becker"),

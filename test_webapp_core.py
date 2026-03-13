@@ -116,6 +116,7 @@ class WebappCoreTests(unittest.TestCase):
         data = {
             "app_name": "Test Calendar Console",
             "public_base_url": "",
+            "display_timezone": "Europe/Berlin",
             "database_path": database_path or self.database.path,
             "backup_directory": (database_path or self.database.path).parent / "backups",
             "legal_brand_name": "Webdesign Becker",
