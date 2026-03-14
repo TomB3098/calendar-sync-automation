@@ -586,6 +586,37 @@ class SyncService:
                     error=str(exc),
                 )
 
+    @staticmethod
+    def _find_matching_remote_event(
+        desired: SyncEvent,
+        remote_events: Dict[str, SyncEvent],
+        blocked_title: str,
+        mode: str,
+        claimed_ids: Optional[set] = None,
+    ) -> Optional[SyncEvent]:
+        """Find a remote event that matches `desired` by content.
+
+        This prevents creating a duplicate when the same real-world event
+        already exists natively in the target calendar (e.g. Google) and was
+        also imported from another provider (Exchange/iCloud).
+        """
+        claimed = claimed_ids or set()
+        d_start = desired.start.get("dateTime") or desired.start.get("date") or ""
+        d_end = desired.end.get("dateTime") or desired.end.get("date") or ""
+        if not d_start or not d_end:
+            return None
+        desired_fingerprint = desired.fingerprint(mode, blocked_title)
+        for provider_id, remote in remote_events.items():
+            if provider_id in claimed:
+                continue
+            r_start = remote.start.get("dateTime") or remote.start.get("date") or ""
+            r_end = remote.end.get("dateTime") or remote.end.get("date") or ""
+            if r_start != d_start or r_end != d_end:
+                continue
+            if remote.fingerprint(mode, blocked_title) == desired_fingerprint:
+                return remote
+        return None
+
     def _export_internal_events(
         self,
         user_id: int,
@@ -598,6 +629,13 @@ class SyncService:
     ) -> None:
         blocked_title = connection["blocked_title"] or "Blocked"
         now_iso = iso_z(now_utc())
+        # Pre-populate with remote IDs already linked via import so that
+        # content-matching cannot steal them for a different internal event.
+        claimed_remote_ids: set = {
+            link["external_event_id"]
+            for link in self.repository.list_links_for_connection(int(connection["id"]))
+            if link.get("external_event_id")
+        }
 
         for event in self.repository.list_internal_events(user_id, include_deleted=True):
             if not event.get("deleted_at") and not self._is_internal_event_in_window(event, window_start, window_end):
@@ -606,6 +644,33 @@ class SyncService:
             try:
                 link = self.repository.get_link_by_event_and_connection(int(event["id"]), int(connection["id"]))
                 existing = remote_events.get(link["external_event_id"]) if link else None
+
+                if existing is None and link is None:
+                    mode = self._event_mode_for_connection(connection, event, link)
+                    desired_preview = self._internal_to_sync_event(connection["provider"], event)
+                    matched = self._find_matching_remote_event(
+                        desired_preview,
+                        remote_events,
+                        blocked_title,
+                        mode,
+                    )
+                    if matched:
+                        if matched.provider_id in claimed_remote_ids:
+                            # Same time slot is already covered by another
+                            # internal event's link — skip to avoid duplicate.
+                            logger.action(
+                                connection["provider"], "skipped", sync_id,
+                                "duplicate-time-slot-covered",
+                            )
+                            continue
+                        existing = matched
+                        logger.action(
+                            connection["provider"], "skipped", sync_id,
+                            "content-matched-existing",
+                        )
+
+                if existing:
+                    claimed_remote_ids.add(existing.provider_id)
 
                 if event.get("deleted_at"):
                     if link and not link.get("deleted_at"):
