@@ -490,19 +490,23 @@ class SyncService:
                     )
                 elif should_apply:
                     before_snapshot = _snapshot_internal_event(event)
+                    update_fields = {
+                        "title": remote_event.title,
+                        "description": remote_event.description,
+                        "location": remote_event.location,
+                        "starts_at": self._internal_start(remote_event),
+                        "ends_at": self._internal_end(remote_event),
+                        "is_all_day": bool(remote_event.start.get("all_day")),
+                        "recurrence_rule": "\n".join(remote_event.recurrence or []),
+                        "deleted_at": None,
+                    }
+                    if not self._is_mirror_import(remote_event):
+                        update_fields["source_provider"] = connection["provider"]
+                        update_fields["source_connection_id"] = int(connection["id"])
                     event = self.repository.update_internal_event(
                         user_id,
                         int(event["id"]),
-                        title=remote_event.title,
-                        description=remote_event.description,
-                        location=remote_event.location,
-                        starts_at=self._internal_start(remote_event),
-                        ends_at=self._internal_end(remote_event),
-                        is_all_day=bool(remote_event.start.get("all_day")),
-                        recurrence_rule="\n".join(remote_event.recurrence or []),
-                        source_provider=connection["provider"],
-                        source_connection_id=int(connection["id"]),
-                        deleted_at=None,
+                        **update_fields,
                     ) or event
                     logger.action(
                         connection["provider"],
@@ -585,6 +589,10 @@ class SyncService:
                     external_event_id=link["external_event_id"],
                     error=str(exc),
                 )
+
+    @staticmethod
+    def _is_mirror_import(remote_event: SyncEvent) -> bool:
+        return str(remote_event.source or "").strip().lower() == SOURCE_WEBAPP
 
     @staticmethod
     def _find_matching_remote_event(
@@ -879,6 +887,8 @@ class SyncService:
             return False
 
         missing_connection_id = int(connection["id"])
+        if self._should_preserve_origin_for_missing_mirror(event, link, missing_connection_id):
+            return False
         if int(event.get("source_connection_id") or 0) == missing_connection_id:
             return True
         if int(event.get("origin_connection_id") or 0) == missing_connection_id:
@@ -889,6 +899,22 @@ class SyncService:
         if not event_updated or not reference_time:
             return True
         return event_updated <= reference_time
+
+    def _should_preserve_origin_for_missing_mirror(
+        self,
+        event: Dict[str, Any],
+        link: Dict[str, Any],
+        missing_connection_id: int,
+    ) -> bool:
+        if str(link.get("source") or "").strip().lower() != SOURCE_WEBAPP:
+            return False
+        origin_connection_id = int(event.get("origin_connection_id") or 0)
+        if not origin_connection_id or origin_connection_id == missing_connection_id:
+            return False
+        origin_link = self.repository.get_link_by_event_and_connection(int(event["id"]), origin_connection_id)
+        if not origin_link or origin_link.get("deleted_at"):
+            return False
+        return True
 
     def _missing_link_reference_time(self, link: Dict[str, Any]) -> Optional[datetime]:
         last_seen = parse_any_datetime(link.get("last_seen_at"))
