@@ -7,19 +7,18 @@
     <p>Hier laufen alle Jobs, Provider-Aktionen und Fehlermeldungen zusammen.</p>
     {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
     {% if sync_notice %}<p class="notice-line">{{ sync_notice }}</p>{% endif %}
-    {% if running_job %}<p class="meta-line">Aktiver Lauf: Job {{ running_job.id }} seit {{ running_job.started_at }}
-    </p>{% endif %}
+    <p class="meta-line" data-live-running-job {% if not running_job %}hidden{% endif %}>
+      {% if running_job %}Aktiver Lauf: Job {{ running_job.id }} seit {{ running_job.started_at }}{% endif %}
+    </p>
   </div>
   <form method="post" action="/app/sync">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Sync läuft bereits" if running_job else "Sync jetzt starten" }}</button>
+    <button type="submit" data-live-sync-start-button data-running-label="Sync läuft bereits" data-idle-label="Sync jetzt starten" {% if running_job %}disabled{% endif %}>{{ "Sync läuft bereits" if running_job else "Sync jetzt starten" }}</button>
   </form>
-  {% if running_job %}
-  <form method="post" action="/app/sync/cancel">
+  <form method="post" action="/app/sync/cancel" data-live-sync-cancel-form {% if not running_job %}hidden{% endif %}>
     <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
     <button type="submit">Sync abbrechen</button>
   </form>
-  {% endif %}
 </section>
 
 <section class="panel">
@@ -76,7 +75,7 @@
   </form>
 </section>
 
-<section class="layout-split">
+<section class="layout-split" data-live-log-root data-live-endpoint="{{ logs_live_endpoint }}" data-live-mode="logs">
   <article class="panel">
     <div class="panel-head">
       <h3>Jobs</h3>
@@ -92,7 +91,7 @@
             <th>Nachricht</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody data-live-jobs-body>
           {% for job in jobs %}
           <tr class="{% if selected_job_id and selected_job_id == job.id %}table-row-active{% endif %}">
             <td><span class="status-pill">{{ job.status }}</span></td>
@@ -117,9 +116,9 @@
   <article class="panel">
     <div class="panel-head">
       <h3>Logeinträge</h3>
-      <span class="meta-line">{{ log_entries|length }} Treffer</span>
+      <span class="meta-line" data-live-log-summary>{{ log_result_summary }}</span>
     </div>
-    <div class="log-stream">
+    <div class="log-stream" data-live-log-stream data-empty-text="Keine Logeinträge vorhanden.">
       {% for entry in log_entries %}
       <article class="log-line">
         <div class="log-head">
@@ -164,4 +163,7 @@
     </div>
   </article>
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='live_logs.js') }}?v={{ asset_version }}"></script>
 {% endblock %}

@@ -1994,6 +1994,46 @@ class WebappCoreTests(unittest.TestCase):
         self.assertIn("Nur diesen Job", response.text)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
+    def test_http_logs_live_feed_returns_recent_entries_and_running_job(self) -> None:
+        database_path = Path(tempfile.mkdtemp()) / "http-log-live.sqlite3"
+        settings = self.make_settings(database_path=database_path, auto_sync_worker_enabled=False)
+        client = TestClient(create_app(settings))
+
+        client.get("/setup")
+        client.post(
+            "/setup",
+            data={
+                "_csrf": self.csrf_token(client),
+                "email": "owner@example.com",
+                "password": "very-long-secret-pass",
+            },
+            follow_redirects=False,
+        )
+
+        repo = AppRepository(Database(database_path), SecretBox(TEST_DATA_KEY))
+        user = repo.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+        assert user is not None
+        job = repo.create_sync_job(int(user["id"]), "owner@example.com", "Live sync", status="running")
+        repo.add_sync_log(
+            int(job["id"]),
+            level="info",
+            provider="exchange",
+            action="updated",
+            sync_id="sync-live-1",
+            message="imported-into-webapp",
+            payload={"detail": "imported-into-webapp"},
+        )
+
+        response = client.get("/app/logs/live?limit=10")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["running_job"]["id"], int(job["id"]))
+        self.assertEqual(payload["log_count"], 1)
+        self.assertEqual(payload["log_entries"][0]["message"], "imported-into-webapp")
+        self.assertEqual(payload["log_entries"][0]["sync_id"], "sync-live-1")
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE and CRYPTOGRAPHY_AVAILABLE, "webapp dependencies are not installed")
     def test_http_connection_profiles_can_export_and_import(self) -> None:
         source_db = Path(tempfile.mkdtemp()) / "http-profile-source.sqlite3"
         source_settings = self.make_settings(database_path=source_db, auto_sync_worker_enabled=False)

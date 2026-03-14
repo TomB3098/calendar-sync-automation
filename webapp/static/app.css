@@ -827,6 +827,30 @@ tbody tr:hover td {
   font-weight: 600;
 }
 
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 34px;
+  padding: 0 0.85rem;
+  border-radius: 9999px;
+  border: 1px solid rgb(67 169 209 / 24%);
+  background: rgb(67 169 209 / 10%);
+  color: #25566e;
+  font-family: "Poppins", "Segoe UI", sans-serif;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.live-badge::before {
+  content: "";
+  width: 0.58rem;
+  height: 0.58rem;
+  border-radius: 9999px;
+  background: #43a9d1;
+  box-shadow: 0 0 0 0.18rem rgb(67 169 209 / 14%);
+}
+
 .notice-line,
 .auth-error {
   display: inline-flex;

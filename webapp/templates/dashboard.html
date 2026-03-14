@@ -6,12 +6,14 @@
     <h2>Interner Hauptkalender mit Sync-Konsole</h2>
     <p>Die Webanwendung führt interne Ereignisse, externe Verknüpfungen und den manuellen Sync-Lauf an einem Ort zusammen.</p>
     {% if page_notice %}<p class="notice-line">{{ page_notice }}</p>{% endif %}
-    {% if running_job %}<p class="meta-line">Aktiver Sync: Job {{ running_job.id }} läuft seit {{ running_job.started_at }}</p>{% endif %}
+    <p class="meta-line" data-live-running-job {% if not running_job %}hidden{% endif %}>
+      {% if running_job %}Aktiver Sync: Job {{ running_job.id }} läuft seit {{ running_job.started_at }}{% endif %}
+    </p>
     <p class="meta-line">{{ auto_sync_status }}</p>
   </div>
   <form method="post" action="/app/sync">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-    <button type="submit" {% if running_job %}disabled{% endif %}>{{ "Synchronisierung läuft" if running_job else "Jetzt synchronisieren" }}</button>
+    <button type="submit" data-live-sync-start-button data-running-label="Synchronisierung läuft" data-idle-label="Jetzt synchronisieren" {% if running_job %}disabled{% endif %}>{{ "Synchronisierung läuft" if running_job else "Jetzt synchronisieren" }}</button>
   </form>
 </section>
 
@@ -52,6 +54,67 @@
     <strong>{{ job_count }}</strong>
     <small>Gesamtzahl aller Läufe</small>
   </article>
+</section>
+
+<section class="panel" data-live-log-root data-live-endpoint="{{ dashboard_live_endpoint }}" data-live-mode="dashboard">
+  <div class="panel-head">
+    <div>
+      <h3>Live-Sync-Stream</h3>
+      <p class="meta-line" data-live-log-summary>
+        {% if dashboard_live_log_count %}
+        {{ dashboard_live_log_count }} aktuelle Logeinträge, werden ohne Seiten-Reload nachgeladen.
+        {% else %}
+        Sobald der nächste Sync läuft, erscheinen die Logeinträge hier automatisch.
+        {% endif %}
+      </p>
+    </div>
+    <span class="live-badge" data-live-status>Live</span>
+  </div>
+  <div class="log-stream" data-live-log-stream data-empty-text="Noch keine Logeinträge vorhanden.">
+    {% for entry in dashboard_live_logs %}
+    <article class="log-line">
+      <div class="log-head">
+        <div>
+          <div class="log-meta">{{ entry.created_at }}{% if entry.triggered_by %} · {{ entry.triggered_by }}{% endif %}</div>
+          <strong>{{ entry.message }}</strong>
+        </div>
+        <div class="log-tags">
+          <span class="status-pill log-pill log-pill-{{ entry.level_slug }}">{{ entry.level }}</span>
+          <span class="status-pill log-pill">{{ entry.provider_label }}</span>
+          <span class="status-pill log-pill">{{ entry.action_label }}</span>
+          {% if entry.has_sync_id %}<span class="status-pill log-pill">{{ entry.sync_id }}</span>{% endif %}
+        </div>
+      </div>
+      {% if entry.detail_line and entry.detail_line != entry.message %}
+      <p class="meta-line">{{ entry.detail_line }}</p>
+      {% endif %}
+      {% if entry.change_summary %}
+      <p class="change-summary">Geändert: {{ entry.change_summary }}</p>
+      <div class="change-table">
+        <div class="change-row change-head">
+          <span>Feld</span>
+          <span>Vorher</span>
+          <span>Nachher</span>
+        </div>
+        {% for change in entry.changes %}
+        <div class="change-row">
+          <span class="change-label">{{ change.label }}</span>
+          <span class="change-value">{{ change.before }}</span>
+          <span class="change-value">{{ change.after }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if entry.error_text %}
+      <pre class="log-payload">{{ entry.error_text }}</pre>
+      {% elif entry.payload_preview %}
+      <pre class="log-payload">{{ entry.payload_preview }}</pre>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="meta-line">Noch keine Logeinträge vorhanden.</p>
+    {% endfor %}
+  </div>
 </section>
 
 <section class="panel">
@@ -162,7 +225,7 @@
       <thead>
         <tr><th>Status</th><th>Trigger</th><th>Start</th><th>Nachricht</th></tr>
       </thead>
-      <tbody>
+      <tbody data-live-jobs-body>
         {% for job in jobs %}
         <tr>
           <td><span class="status-pill">{{ job.status }}</span></td>
@@ -177,4 +240,7 @@
     </table>
   </div>
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='live_logs.js') }}?v={{ asset_version }}"></script>
 {% endblock %}

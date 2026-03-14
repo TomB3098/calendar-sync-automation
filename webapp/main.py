@@ -427,13 +427,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         total_event_count = repository.count_internal_events(int(user["id"]), include_deleted=True)
         archived_event_count = max(0, total_event_count - active_event_count)
         provider_link_count = repository.count_event_links(int(user["id"]))
-        jobs = [_job_for_template(item, settings) for item in repository.list_sync_jobs(int(user["id"]), 8)]
-        recent_dashboard_logs = [
-            _log_entry_for_template(entry, settings) for entry in repository.list_sync_log_entries(int(user["id"]), 160)
-        ]
+        log_state = _log_view_state(repository, int(user["id"]), settings, {"sort": "newest"}, log_limit=160, job_limit=8)
+        jobs = log_state["jobs"]
+        recent_dashboard_logs = log_state["log_entries"]
+        recent_dashboard_live_logs = [entry for entry in recent_dashboard_logs if not _log_entry_is_no_change(entry)]
         dashboard_errors = [entry for entry in recent_dashboard_logs if _log_entry_has_error(entry)]
         dashboard_changes = [entry for entry in recent_dashboard_logs if _log_entry_has_visible_change(entry)]
-        running_job = _job_for_template(repository.get_running_sync_job(int(user["id"])), settings)
+        running_job = log_state["running_job"]
         context = _base_context(request, settings, user, "Dashboard")
         context.update(
             {
@@ -444,6 +444,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 "provider_link_count": provider_link_count,
                 "job_count": repository.count_sync_jobs(int(user["id"])),
                 "jobs": jobs,
+                "dashboard_live_logs": recent_dashboard_live_logs[:20],
+                "dashboard_live_log_count": len(recent_dashboard_live_logs[:20]),
                 "dashboard_changes": dashboard_changes[:6],
                 "dashboard_change_count": len(dashboard_changes),
                 "dashboard_errors": dashboard_errors[:6],
@@ -451,6 +453,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 "running_job": running_job,
                 "auto_sync_interval_minutes": int(user.get("auto_sync_interval_minutes") or 0),
                 "auto_sync_status": _auto_sync_status(user),
+                "dashboard_live_endpoint": str(request.url_for("logs_live_feed")) + "?limit=20&hide_no_change=1",
                 "page_notice": _page_notice(request),
             }
         )
@@ -1035,29 +1038,50 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         user = _require_user(request, repository, sessions, settings)
         if not user:
             return _redirect("/setup" if repository.count_users() == 0 else "/login")
-        running_job = _job_for_template(repository.get_running_sync_job(int(user["id"])), settings)
-        jobs = [_job_for_template(item, settings) for item in repository.list_sync_jobs(int(user["id"]), 25)]
-        raw_log_entries = repository.list_sync_log_entries(int(user["id"]), 500)
         log_filters = _parse_log_filters(request)
-        filtered_log_entries = _filter_log_entries(raw_log_entries, log_filters)
+        log_state = _log_view_state(repository, int(user["id"]), settings, log_filters, log_limit=500, job_limit=25)
         context = _base_context(request, settings, user, "Sync-Logs")
         context.update(
             {
-                "jobs": jobs,
-                "log_entries": [_log_entry_for_template(entry, settings) for entry in filtered_log_entries],
+                "jobs": log_state["jobs"],
+                "log_entries": log_state["log_entries"],
                 "log_filters": log_filters,
-                "log_provider_options": _log_filter_options(raw_log_entries, "provider"),
-                "log_level_options": _log_filter_options(raw_log_entries, "level"),
-                "log_action_options": _log_filter_options(raw_log_entries, "action"),
+                "log_provider_options": log_state["log_provider_options"],
+                "log_level_options": log_state["log_level_options"],
+                "log_action_options": log_state["log_action_options"],
                 "log_sort_options": [{"value": value, "label": label} for value, label in LOG_SORT_OPTIONS],
-                "log_result_summary": _log_result_summary(log_filters, len(filtered_log_entries), len(raw_log_entries)),
+                "log_result_summary": log_state["log_result_summary"],
                 "selected_job_id": log_filters["job_id"],
-                "running_job": running_job,
+                "running_job": log_state["running_job"],
+                "logs_live_endpoint": _logs_live_endpoint(request),
                 "sync_notice": _sync_notice(request),
                 "page_notice": _page_notice(request),
             }
         )
         return _render_template(request, settings, csrf, "logs.html", context)
+
+    @app.get("/app/logs/live", name="logs_live_feed")
+    async def logs_live_feed(request: Request) -> JSONResponse:
+        user = _require_user(request, repository, sessions, settings)
+        if not user:
+            return JSONResponse({"error": "auth"}, status_code=401)
+        log_filters = _parse_log_filters(request)
+        limit = _parse_live_log_limit(str(request.query_params.get("limit") or ""), default=120)
+        job_limit = _parse_live_log_limit(str(request.query_params.get("job_limit") or ""), default=25, max_limit=50)
+        state = _log_view_state(repository, int(user["id"]), settings, log_filters, log_limit=limit, job_limit=job_limit)
+        if str(request.query_params.get("hide_no_change") or "").strip() in {"1", "true", "yes"}:
+            state["log_entries"] = [entry for entry in state["log_entries"] if not _log_entry_is_no_change(entry)]
+        return JSONResponse(
+            {
+                "running_job": state["running_job"],
+                "jobs": state["jobs"],
+                "log_entries": state["log_entries"],
+                "log_result_summary": state["log_result_summary"],
+                "log_count": len(state["log_entries"]),
+                "selected_job_id": log_filters["job_id"],
+                "server_time": _format_timestamp(iso_z(now_utc()), settings),
+            }
+        )
 
     return app
 
@@ -1842,14 +1866,21 @@ def _log_entry_has_error(entry: Dict[str, Any]) -> bool:
     return str(entry.get("level") or "").strip().lower() == "error"
 
 
+def _log_entry_is_no_change(entry: Dict[str, Any]) -> bool:
+    action = str(entry.get("action") or "").strip().lower()
+    message = str(entry.get("message") or "").strip().lower()
+    detail = str(dict(entry.get("payload") or {}).get("detail") or entry.get("detail_line") or "").strip().lower()
+    return "no-change" in message or "no change" in message or "no-change" in detail or "no change" in detail or (
+        action == "summary" and "finished" in message
+    )
+
+
 def _log_entry_has_visible_change(entry: Dict[str, Any]) -> bool:
     if _log_entry_has_error(entry):
         return False
     action = str(entry.get("action") or "").strip().lower()
-    message = str(entry.get("message") or "").strip().lower()
-    detail = str(dict(entry.get("payload") or {}).get("detail") or "").strip().lower()
     changes = list(entry.get("changes") or [])
-    if "no-change" in message or "no change" in message or "no-change" in detail or "no change" in detail:
+    if _log_entry_is_no_change(entry):
         return False
     if action in {"summary", "list", "skipped"}:
         return False
@@ -2244,6 +2275,19 @@ def _parse_log_filters(request: Request) -> Dict[str, Any]:
     }
 
 
+def _parse_live_log_limit(raw: str, *, default: int, max_limit: int = 500) -> int:
+    value = str(raw or "").strip()
+    if not value.isdigit():
+        return default
+    return max(1, min(int(value), max_limit))
+
+
+def _logs_live_endpoint(request: Request) -> str:
+    query = request.url.query
+    endpoint = str(request.url_for("logs_live_feed"))
+    return f"{endpoint}?{query}" if query else endpoint
+
+
 def _log_filter_options(entries: List[Dict[str, Any]], key: str) -> List[str]:
     values = sorted({str(entry.get(key) or "").strip() for entry in entries if str(entry.get(key) or "").strip()})
     return values
@@ -2343,6 +2387,28 @@ def _log_result_summary(filters: Dict[str, Any], result_count: int, total_count:
     sort_label = next((label for value, label in LOG_SORT_OPTIONS if value == filters.get("sort")), "Neueste zuerst")
     parts.append(f"Sortierung: {sort_label}")
     return " · ".join(parts)
+
+
+def _log_view_state(
+    repository: AppRepository,
+    user_id: int,
+    settings: AppSettings,
+    filters: Dict[str, Any],
+    *,
+    log_limit: int,
+    job_limit: int,
+) -> Dict[str, Any]:
+    raw_log_entries = repository.list_sync_log_entries(user_id, log_limit)
+    filtered_log_entries = _filter_log_entries(raw_log_entries, filters)
+    return {
+        "jobs": [_job_for_template(item, settings) for item in repository.list_sync_jobs(user_id, job_limit)],
+        "log_entries": [_log_entry_for_template(entry, settings) for entry in filtered_log_entries],
+        "log_provider_options": _log_filter_options(raw_log_entries, "provider"),
+        "log_level_options": _log_filter_options(raw_log_entries, "level"),
+        "log_action_options": _log_filter_options(raw_log_entries, "action"),
+        "log_result_summary": _log_result_summary(filters, len(filtered_log_entries), len(raw_log_entries)),
+        "running_job": _job_for_template(repository.get_running_sync_job(user_id), settings),
+    }
 
 
 def _log_entry_for_template(entry: Dict[str, Any], settings: AppSettings) -> Dict[str, Any]:
