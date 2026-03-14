@@ -858,6 +858,100 @@ class WebappCoreTests(unittest.TestCase):
         self.assertEqual(len(google_links), 1)
         self.assertEqual(google_links[0]["external_event_id"], "google-native-1")
 
+    def test_sync_service_does_not_create_two_google_events_for_duplicate_internal_sources(self) -> None:
+        settings = self.make_settings()
+        starts_at, ends_at = self.in_window_times(start_offset_hours=6)
+        user = self.repository.create_user("google-export-dedup@example.com", "hash")
+        exchange_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="exchange",
+            display_name="Work Exchange",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "exchange_tenant_id": "tenant",
+                "exchange_client_id": "client",
+                "exchange_client_secret": "secret",
+                "exchange_user": "google-export-dedup@example.com",
+            },
+        )
+        icloud_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="icloud",
+            display_name="iCloud",
+            sync_mode="full",
+            blocked_title="Blocked",
+            settings={
+                "icloud_user": "google-export-dedup@example.com",
+                "icloud_app_pw": "pw",
+                "icloud_principal_path": "/principal/",
+            },
+        )
+        google_connection = self.repository.create_connection(
+            int(user["id"]),
+            provider="google",
+            display_name="Google",
+            sync_mode="blocked",
+            blocked_title="Blocked",
+            settings={
+                "google_calendar_id": "primary",
+                "google_oauth_client_id": "client",
+                "google_oauth_client_secret": "secret",
+                "google_oauth_refresh_token": "refresh",
+            },
+        )
+        exchange_remote = SyncEvent(
+            provider="exchange",
+            provider_id="exchange-dup-1",
+            title="Customer Call",
+            description="Agenda",
+            location="Zoom",
+            start={"all_day": False, "dateTime": starts_at},
+            end={"all_day": False, "dateTime": ends_at},
+            sync_id="exchange-sync-1",
+            source="exchange",
+            mode="full",
+            modified_at=datetime.now(UTC),
+            raw={"id": "exchange-dup-1"},
+        )
+        icloud_remote = SyncEvent(
+            provider="icloud",
+            provider_id="icloud-dup-1",
+            title="Customer Call",
+            description="Agenda",
+            location="Zoom",
+            start={"all_day": False, "dateTime": starts_at},
+            end={"all_day": False, "dateTime": ends_at},
+            sync_id="icloud-sync-1",
+            source="icloud",
+            mode="full",
+            modified_at=datetime.now(UTC),
+            href="icloud-dup-1",
+            raw={"href": "icloud-dup-1"},
+        )
+
+        exchange_adapter = FakeConnectionAdapter(exchange_connection, object(), [exchange_remote])
+        icloud_adapter = FakeConnectionAdapter(icloud_connection, object(), [icloud_remote])
+        google_adapter = FakeConnectionAdapter(google_connection, object(), [])
+        service = FakeSyncService(
+            self.repository,
+            settings,
+            {
+                int(exchange_connection["id"]): exchange_adapter,
+                int(icloud_connection["id"]): icloud_adapter,
+                int(google_connection["id"]): google_adapter,
+            },
+        )
+
+        job = self.repository.create_sync_job(int(user["id"]), "test", "Google export dedup test")
+        logger = SyncJobLogger(self.repository, int(job["id"]))
+        service._run_user_sync(int(user["id"]), logger)
+
+        self.assertEqual(len(google_adapter.upsert_calls), 1)
+        self.assertIsNone(google_adapter.upsert_calls[0]["existing_provider_id"])
+        google_links = self.repository.list_links_for_connection(int(google_connection["id"]))
+        self.assertEqual(len(google_links), 1)
+
     def test_sync_service_exports_google_origin_events_full_to_exchange_and_icloud(self) -> None:
         settings = self.make_settings()
         starts_at, ends_at = self.in_window_times(start_offset_hours=4)

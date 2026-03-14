@@ -617,6 +617,32 @@ class SyncService:
                 return remote
         return None
 
+    @staticmethod
+    def _remember_exported_remote_event(
+        remote_events: Dict[str, SyncEvent],
+        connection: Dict[str, Any],
+        desired: SyncEvent,
+        provider_id: str,
+        sync_id: str,
+        mode: str,
+    ) -> None:
+        remote_events[provider_id] = SyncEvent(
+            provider=connection["provider"],
+            provider_id=provider_id,
+            title=desired.title,
+            description=desired.description,
+            location=desired.location,
+            start=dict(desired.start),
+            end=dict(desired.end),
+            recurrence=list(desired.recurrence or []),
+            sync_id=sync_id,
+            source=SOURCE_WEBAPP,
+            mode=mode,
+            modified_at=now_utc(),
+            href=provider_id if connection["provider"] == SOURCE_ICLOUD else None,
+            raw={"id": provider_id},
+        )
+
     def _export_internal_events(
         self,
         user_id: int,
@@ -689,6 +715,15 @@ class SyncService:
                     mode=mode,
                     blocked_title=blocked_title,
                     log=logger,
+                )
+                claimed_remote_ids.add(provider_id)
+                self._remember_exported_remote_event(
+                    remote_events,
+                    connection,
+                    desired,
+                    provider_id,
+                    sync_id,
+                    mode,
                 )
 
                 payload = existing.raw if existing else {}
